@@ -1,0 +1,20 @@
+{
+    "name": "npm-follower",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "scripts": {
+      "test": "echo \"Error: no test specified\" && exit 1",
+      "start": "node index.js"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+      "changes-stream": "^2.2.0",
+      "fs": "^0.0.1-security",
+      "normalize-registry-metadata": "^1.1.2",
+      "request": "^2.88.2",
+      "all-package-names": "^2.0.661"
+    }
+  }

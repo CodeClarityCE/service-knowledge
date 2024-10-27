@@ -1,0 +1,24 @@
+1 map[name:map[toLowerCase:toString] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.21
+1 map[name:map[toLowerCase:constructor] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.20
+4 false ::: VERSIONS/web-watcher:0.2.1
+4 1233 ::: VERSIONS/npm-broken-semver:0.7.0
+4 false ::: VERSIONS/@mknapik:rxjs-extensions:0.3.0
+4 true ::: VERSIONS/vue-element-commonm:1.0.4
+1 map[name:map[toLowerCase:constructor] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.20
+1 map[name:map[toLowerCase:toString] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.21
+4 false ::: VERSIONS/web-watcher:0.2.1
+4 1233 ::: VERSIONS/npm-broken-semver:0.7.0
+4 false ::: VERSIONS/@mknapik:rxjs-extensions:0.3.0
+4 true ::: VERSIONS/vue-element-commonm:1.0.4
+1 map[name:map[toLowerCase:toString] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.21
+1 map[name:map[toLowerCase:constructor] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.20
+4 false ::: VERSIONS/web-watcher:0.2.1
+4 1233 ::: VERSIONS/npm-broken-semver:0.7.0
+4 false ::: VERSIONS/@mknapik:rxjs-extensions:0.3.0
+4 true ::: VERSIONS/vue-element-commonm:1.0.4
+1 map[name:map[toLowerCase:constructor] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.20
+1 map[name:map[toLowerCase:toString] url:javascript:alert(1)//"' onmouseover=alert(1)] ::: VERSIONS/ljon-r2-test-2:1.0.21
+4 false ::: VERSIONS/web-watcher:0.2.1
+4 1233 ::: VERSIONS/npm-broken-semver:0.7.0
+4 false ::: VERSIONS/@mknapik:rxjs-extensions:0.3.0
+4 true ::: VERSIONS/vue-element-commonm:1.0.4

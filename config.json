@@ -1,0 +1,7 @@
+{
+    "name": "knowledge",
+    "version": "v0.0.2",
+    "image_name": "ceherzog/service-knowledge",
+    "image_version": "0.0.2",
+    "depends_on": []
+}

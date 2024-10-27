@@ -1,0 +1,8 @@
+services:
+  service-knowledge:
+    # For dev we keep the golang container and install devtools
+    build:
+      target: plugin-debug
+    image: ceherzog/service-knowledge-debug:latest
+    ports:
+      - 40000:40000
