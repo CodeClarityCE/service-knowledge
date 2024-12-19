@@ -7,7 +7,7 @@ services:
       args:
         - PLUGINNAME=knowledge
         - KIND=services
-    image: ceherzog/service-knowledge-dev:latest
+    image: codeclarityce/service-knowledge-dev:latest
     restart: always
     volumes:
       - ../../backend:/codeclarity
