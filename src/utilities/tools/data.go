@@ -146,7 +146,7 @@ func CreatePackageInfoNpm(result types.Npm) knowledge.Package {
 	pack.Homepage = result.Homepage
 	pack.LatestVersion = types.GetLatestVersion(result.Versions)
 	pack.Versions = types.ConvertNpmVersion(result)
-	pack.Time = result.Time["modified"]
+	pack.Time = result.Time[pack.LatestVersion]
 
 	// Repository can be a string or a map
 	if result.Repository != nil {
