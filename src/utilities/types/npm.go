@@ -2,6 +2,7 @@ package types
 
 import (
 	"strings"
+	"time"
 
 	semver "github.com/CodeClarityCE/utility-node-semver"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -13,7 +14,7 @@ type Npm struct {
 	Revision    string                `json:"_rev"`
 	Homepage    string                `json:"homepage"`
 	Versions    map[string]NpmVersion `json:"versions"`
-	Time        any                   `json:"time"`
+	Time        map[string]time.Time  `json:"time"`
 	Repository  any                   `json:"repository"`
 	Keywords    any                   `json:"keywords"`
 	DistTags    map[string]string     `json:"dist-tags"`
@@ -121,6 +122,7 @@ func ConvertNpmVersion(npm Npm) []knowledge.Version {
 			"PeerDependenciesMeta": npm.Versions[key].PeerDependenciesMeta,
 			"OptionalDependencies": npm.Versions[key].OptionalDependencies,
 			"Deprecated":           npm.Versions[key].Deprecated,
+			"Time":                 npm.Time[key],
 		}
 		versions = append(versions, version)
 	}

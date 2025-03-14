@@ -3,7 +3,6 @@ package tools
 import (
 	"log"
 	"strings"
-	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/types"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
@@ -147,7 +146,7 @@ func CreatePackageInfoNpm(result types.Npm) knowledge.Package {
 	pack.Homepage = result.Homepage
 	pack.LatestVersion = types.GetLatestVersion(result.Versions)
 	pack.Versions = types.ConvertNpmVersion(result)
-	pack.Time = time.Now()
+	pack.Time = result.Time["modified"]
 
 	// Repository can be a string or a map
 	if result.Repository != nil {
