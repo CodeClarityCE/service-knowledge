@@ -75,7 +75,6 @@ func Setup(confirm bool) error {
 		return err
 	}
 
-	dbhelper.CreateTable(dbhelper.Config.Database.Config)
 	dbhelper.CreateTable(dbhelper.Config.Database.Plugins)
 
 	return nil
