@@ -78,10 +78,11 @@ func GetLatestVersion(npmVersions map[string]NpmVersion) string {
 	versions := []string{}
 
 	for key := range npmVersions {
+		// We don't consider pre release as the latest version
+		if strings.Contains(npmVersions[key].Version, "-") {
+			continue
+		}
 		versions = append(versions, npmVersions[key].Version)
-		// if latestVersion == "" || npmVersions[key].Version > latestVersion {
-		// 	latestVersion = npmVersions[key].Version
-		// }
 	}
 
 	versions, err := semver.SortStrings(-1, versions)
