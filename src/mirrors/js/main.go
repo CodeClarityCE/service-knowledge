@@ -137,7 +137,7 @@ func UpdatePackage(db *bun.DB, name string) error {
 	var existingPackage knowledge.Package
 	err := db.NewSelect().Model(&existingPackage).Where("name = ?", name).Scan(context.Background())
 	if err == nil {
-		// Check if the package was updated in the last 12 hours
+		// Check if the package was updated in the last 4 hours
 		if existingPackage.Time.After(time.Now().Add(-4 * time.Hour)) {
 			// Skip package update if true
 			return nil
