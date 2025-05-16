@@ -89,6 +89,9 @@ func GetLatestVersion(npmVersions map[string]NpmVersion) string {
 	if err != nil {
 		return ""
 	}
+	if len(versions) == 0 {
+		return ""
+	}
 	return versions[0]
 }
 
