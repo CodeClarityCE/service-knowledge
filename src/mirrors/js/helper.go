@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/types"
@@ -47,7 +48,9 @@ func download(pack string) (types.Npm, error) {
 	// 	log.Println("COUCH_PASSWORD environment variable is not set")
 	// }
 
-	pack = url.QueryEscape(pack)
+	if !strings.Contains(npmURL, "registry.npmjs.org") {
+		pack = url.QueryEscape(pack)
+	}
 	url := fmt.Sprintf("%s%s", npmURL, pack)
 
 	// Concatenate int in url
