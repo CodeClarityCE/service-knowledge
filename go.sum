@@ -1,5 +1,5 @@
-github.com/CodeClarityCE/utility-dbhelper v0.0.4-alpha h1:WGXS4RR3eqy9L9w3r7mG9GvpNnLAO/LXShQ9qECtJQA=
-github.com/CodeClarityCE/utility-dbhelper v0.0.4-alpha/go.mod h1:cHvEqMvBZRVjnneupZEdH5/F/OEkA/PQM8Su1lVPddY=
+github.com/CodeClarityCE/utility-dbhelper v0.0.5-alpha h1:+UR5jCIt8tMxy80XC7VI0L6TIJWs9Uncl8R22uGJcWo=
+github.com/CodeClarityCE/utility-dbhelper v0.0.5-alpha/go.mod h1:0ZamuqbeHFO9Lgtye/SKkkA5jBDlnsTB2TCITzrmM8s=
 github.com/CodeClarityCE/utility-node-semver v0.0.3-alpha h1:dEp5dlIFDzaKvDsGArX+B+tzjWDRoJhtI+Q/MWPKpK8=
 github.com/CodeClarityCE/utility-node-semver v0.0.3-alpha/go.mod h1:P0HHIagqW3xceAfb50nMumNyw2U4iKi11IZIYKc11L4=
 github.com/CodeClarityCE/utility-types v0.0.6-alpha h1:LQjr0i/Ra490fED7YAaqK6NdgbLZLvWFphDYEgXLt3E=
@@ -42,10 +42,10 @@ github.com/vmihailenco/msgpack/v5 v5.4.1 h1:cQriyiUvjTwOHg8QZaPihLWeRAAVoCpE00IU
 github.com/vmihailenco/msgpack/v5 v5.4.1/go.mod h1:GaZTsDaehaPpQVyxrf5mtQlH+pc21PIudVV/E3rRQok=
 github.com/vmihailenco/tagparser/v2 v2.0.0 h1:y09buUbR+b5aycVFQs/g70pqKVZNBmxwAhO7/IwNM9g=
 github.com/vmihailenco/tagparser/v2 v2.0.0/go.mod h1:Wri+At7QHww0WTrCBeu4J6bNtoV6mEfg5OIWRZA9qds=
-go.opentelemetry.io/otel v1.35.0 h1:xKWKPxrxB6OtMCbmMY021CqC45J+3Onta9MqjhnusiQ=
-go.opentelemetry.io/otel v1.35.0/go.mod h1:UEqy8Zp11hpkUrL73gSlELM0DupHoiq72dR+Zqel/+Y=
-go.opentelemetry.io/otel/trace v1.35.0 h1:dPpEfJu1sDIqruz7BHFG3c7528f6ddfSWfFDVt/xgMs=
-go.opentelemetry.io/otel/trace v1.35.0/go.mod h1:WUk7DtFp1Aw2MkvqGdwiXYDZZNvA/1J8o6xRXLrIkyc=
+go.opentelemetry.io/otel v1.36.0 h1:UumtzIklRBY6cI/lllNZlALOF5nNIzJVb16APdvgTXg=
+go.opentelemetry.io/otel v1.36.0/go.mod h1:/TcFMXYjyRNh8khOAO9ybYkqaDBb/70aVwkNML4pP8E=
+go.opentelemetry.io/otel/trace v1.36.0 h1:ahxWNuqZjpdiFAyrIoQ4GIiAIhxAunQR6MUoKrsNd4w=
+go.opentelemetry.io/otel/trace v1.36.0/go.mod h1:gQ+OnDZzrybY4k4seLzPAWNwVBBVlF2szhehOBB/tGA=
 golang.org/x/crypto v0.38.0 h1:jt+WWG8IZlBnVbomuhg2Mdq0+BBQaHbtqHEFEigjUV8=
 golang.org/x/crypto v0.38.0/go.mod h1:MvrbAqul58NNYPKnOra203SB9vpuZW0e+RRZV+Ggqjw=
 golang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=
