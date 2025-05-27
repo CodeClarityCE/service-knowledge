@@ -4,7 +4,7 @@ go 1.24.3
 
 require (
 	github.com/CodeClarityCE/utility-dbhelper v0.0.5-alpha
-	github.com/CodeClarityCE/utility-node-semver v0.0.3-alpha
+	github.com/CodeClarityCE/utility-node-semver v0.0.4-alpha
 	github.com/CodeClarityCE/utility-types v0.0.6-alpha
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/uptrace/bun v1.2.11
