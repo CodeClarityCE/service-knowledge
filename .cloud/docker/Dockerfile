@@ -41,7 +41,7 @@ RUN apk add git
 RUN [ "go", "build", "-o", "plugin" ]
 
 # PRODUCTION IMAGE
-FROM alpine:3.21.3 AS plugin
+FROM alpine:3.22.0 AS plugin
 ARG KIND
 ARG USERNAME
 ARG PLUGINNAME
