@@ -7,9 +7,9 @@ require (
 	github.com/CodeClarityCE/utility-node-semver v0.0.4-alpha
 	github.com/CodeClarityCE/utility-types v0.0.6-alpha
 	github.com/schollz/progressbar/v3 v3.18.0
-	github.com/uptrace/bun v1.2.11
-	github.com/uptrace/bun/dialect/pgdialect v1.2.11
-	github.com/uptrace/bun/driver/pgdriver v1.2.11
+	github.com/uptrace/bun v1.2.12
+	github.com/uptrace/bun/dialect/pgdialect v1.2.12
+	github.com/uptrace/bun/driver/pgdriver v1.2.12
 )
 
 require (
@@ -24,7 +24,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.opentelemetry.io/otel v1.36.0 // indirect
 	go.opentelemetry.io/otel/trace v1.36.0 // indirect
-	golang.org/x/crypto v0.38.0 // indirect
+	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/term v0.32.0 // indirect
 	mellium.im/sasl v0.3.2 // indirect
