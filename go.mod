@@ -3,13 +3,13 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.24.3
 
 require (
-	github.com/CodeClarityCE/utility-dbhelper v0.0.5-alpha
-	github.com/CodeClarityCE/utility-node-semver v0.0.4-alpha
-	github.com/CodeClarityCE/utility-types v0.0.6-alpha
+	github.com/CodeClarityCE/utility-dbhelper v0.0.6-alpha
+	github.com/CodeClarityCE/utility-node-semver v0.0.5-alpha
+	github.com/CodeClarityCE/utility-types v0.0.7-alpha
 	github.com/schollz/progressbar/v3 v3.18.0
-	github.com/uptrace/bun v1.2.12
-	github.com/uptrace/bun/dialect/pgdialect v1.2.12
-	github.com/uptrace/bun/driver/pgdriver v1.2.12
+	github.com/uptrace/bun v1.2.13
+	github.com/uptrace/bun/dialect/pgdialect v1.2.13
+	github.com/uptrace/bun/driver/pgdriver v1.2.13
 )
 
 require (
