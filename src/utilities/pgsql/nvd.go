@@ -26,6 +26,11 @@ func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
 	}()
 
 	ctx := context.Background()
+
+	// Batch insert and update
+	var newItems []knowledge.NVDItem
+	var existingItems []knowledge.NVDItem
+
 	for _, vuln := range nvd {
 		exists, err := tx.NewSelect().Model(&vuln).Where("nvd_id = ?", vuln.NVDId).Exists(ctx)
 		if err != nil {
@@ -33,15 +38,23 @@ func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
 		}
 
 		if !exists {
-			_, err = tx.NewInsert().Model(&vuln).Exec(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to insert NVD item %v: %w", vuln.NVDId, err)
-			}
+			newItems = append(newItems, vuln)
 		} else {
-			_, err = tx.NewUpdate().Model(&vuln).WherePK().Exec(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to update NVD item %v: %w", vuln.NVDId, err)
-			}
+			existingItems = append(existingItems, vuln)
+		}
+	}
+
+	if len(newItems) > 0 {
+		_, err = tx.NewInsert().Model(&newItems).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to batch insert NVD items: %w", err)
+		}
+	}
+
+	if len(existingItems) > 0 {
+		_, err = tx.NewUpdate().Model(&existingItems).WherePK().Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to batch update NVD items: %w", err)
 		}
 	}
 
