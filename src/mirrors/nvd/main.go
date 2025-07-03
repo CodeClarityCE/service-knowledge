@@ -54,56 +54,6 @@ func setLastNVDChangeNumber(db_config *bun.DB, conf config.Config) error {
 	return nil
 }
 
-// download is a function that downloads CVEs (Common Vulnerabilities and Exposures) from the NVD (National Vulnerability Database) API.
-// It takes in the following parameters:
-// - i: an integer representing the page index of the CVEs to download
-// - element_page: an integer representing the number of CVEs per page
-// - graph: a driver.Graph object representing the graph database
-// - apiKey: a string representing the API key for accessing the NVD API
-// - lastModStartDate: a string representing the start date for filtering CVEs based on their last modification date
-// - lastModEndDate: a string representing the end date for filtering CVEs based on their last modification date
-// It returns a slice of types.CVE representing the downloaded CVEs and an error if any.
-func download(i int, element_page int, apiKey string, lastModStartDate string, lastModEndDate string) ([]knowledge.NVDItem, error) {
-	index := i * element_page
-
-	// By default, download CVEs since last update
-	url := fmt.Sprintf("https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s", element_page, index, lastModStartDate, lastModEndDate)
-	// If the DB was just initialized, download all CVEs
-	if lastModStartDate == "0" {
-		url = fmt.Sprintf("https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d", element_page, index)
-	}
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Println("Error reading request. ", err)
-		return nil, err
-	}
-
-	if apiKey != "" {
-		req.Header.Add("apiKey", apiKey)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Println("Error reading response. ", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body) // response body is []byte
-	if err != nil {
-		log.Println("Error reading body. ", err)
-		return nil, err
-	}
-	var result knowledge.NVD
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		log.Println("Can't unmarshal response body", err)
-		return nil, err
-	}
-
-	return knowledge.GetVulns(result), nil
-}
-
 // Update is a function that updates the NVD (National Vulnerability Database) by fetching the latest CVE (Common Vulnerabilities and Exposures) data.
 // It takes a driver.Collection and a driver.Graph as parameters.
 // The function retrieves the last modified date from the configuration, and if available, checks if it is older than 120 days compared to the current date.
@@ -145,13 +95,6 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 		now_string = now.Format("2006-01-02T15:04:05.000Z")
 		restart = true
 	}
-	url := fmt.Sprintf("https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&lastModStartDate=%s&lastModEndDate=%s", 1, since, now_string)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Println("Error reading request. ", err)
-		return err
-	}
 
 	apiKey, ok := os.LookupEnv("NVD_API_KEY")
 	if !ok || apiKey == "" {
@@ -159,65 +102,56 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 		apiKey = ""
 	}
 
-	if apiKey != "" {
-		req.Header.Add("apiKey", apiKey)
+	element_page := 2000
+	maxRequests := 50
+	if apiKey == "" {
+		maxRequests = 5
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal("Error reading response. ", err)
-	}
-	if resp.StatusCode != 200 {
-		log.Println("Error reading response. ", resp.Status)
-		return fmt.Errorf("%s", resp.Status)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body) // response body is []byte
-	if err != nil {
-		log.Println("Error reading body. ", err)
-		return err
-	}
+	urlTemplate := "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
+
 	var result NVDStats
-	err = json.Unmarshal(body, &result)
+	err = fetchNVDStats(urlTemplate, element_page, since, now_string, apiKey, &result)
 	if err != nil {
-		log.Println("Can't unmarshal response body", err)
+		log.Println("Failed to fetch NVD stats", err)
 		return err
 	}
 
 	log.Printf("Total CVEs: %d", result.TotalResults)
 
-	element_page := 2000
 	n_page := int(result.TotalResults / element_page)
-	// If there is a remainder, add one page
 	if result.TotalResults%element_page != 0 {
 		n_page++
 	}
+
 	bar := progressbar.Default(int64(n_page))
 
 	var wg sync.WaitGroup
-	maxGoroutines := 45
-	if apiKey == "" {
-		maxGoroutines = 5
-	}
-	guard := make(chan struct{}, maxGoroutines)
+	rateLimiter := make(chan struct{}, maxRequests)
+
+	// Fill rate limiter tokens
+	go func() {
+		for {
+			rateLimiter <- struct{}{}
+			time.Sleep(30 * time.Second / time.Duration(maxRequests))
+		}
+	}()
 
 	for i := 0; i < n_page; i++ {
 		wg.Add(1)
-		guard <- struct{}{}
 		go func(wg *sync.WaitGroup, i int) {
 			defer wg.Done()
 			defer bar.Add(1)
-			// Wait 5 seconds
-			vulns, err := download(i, element_page, apiKey, since, now_string)
+
+			vulns, err := downloadBatch(i, element_page, urlTemplate, since, now_string, apiKey, rateLimiter)
 			if err != nil {
 				log.Println(err)
 			}
-			time.Sleep(35 * time.Second)
-			log.Printf("Downloaded %d CVEs", len(vulns))
+
 			pgsql.UpdateNvd(db, vulns)
-			<-guard
 		}(&wg, i)
 	}
+
 	wg.Wait()
 
 	conf.NvdLast = now
@@ -234,5 +168,100 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 			return err
 		}
 	}
+
 	return nil
+}
+
+func fetchNVDStats(urlTemplate string, element_page int, since, now_string, apiKey string, result *NVDStats) error {
+	url := fmt.Sprintf(urlTemplate, element_page, 0, since, now_string)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	if apiKey != "" {
+		req.Header.Add("apiKey", apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("error executing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected response status: %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("error reading response body: %w", err)
+	}
+
+	err = json.Unmarshal(body, result)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling response body: %w", err)
+	}
+
+	return nil
+}
+
+func downloadBatch(i, element_page int, urlTemplate, since, now_string, apiKey string, rateLimiter chan struct{}) ([]knowledge.NVDItem, error) {
+	index := i * element_page
+	url := fmt.Sprintf(urlTemplate, element_page, index, since, now_string)
+
+	var resp *http.Response
+	var err error
+	var retries int
+	maxRetries := 5
+
+	for retries = 0; retries < maxRetries; retries++ {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating request: %w", err)
+		}
+
+		if apiKey != "" {
+			req.Header.Add("apiKey", apiKey)
+		}
+
+		<-rateLimiter // Wait for rate limiter token
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("error executing request: %v, retrying... (%d/%d)", err, retries+1, maxRetries)
+			time.Sleep(time.Duration(2<<retries) * time.Second) // Exponential backoff
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			log.Printf("rate limit exceeded, retrying... (%d/%d)", retries+1, maxRetries)
+			time.Sleep(time.Duration(2<<retries) * time.Second) // Exponential backoff
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
+		}
+
+		break
+	}
+
+	if retries == maxRetries {
+		return nil, fmt.Errorf("max retries reached, unable to fetch data")
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %w", err)
+	}
+
+	var result knowledge.NVD
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshalling response body: %w", err)
+	}
+
+	return knowledge.GetVulns(result), nil
 }
