@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -68,74 +69,18 @@ func Update(db *bun.DB) error {
 		"npm",
 	}
 
-	log.Println("Start updating Licenses OSV")
+	log.Println("Start updating OSV vulnerabilities")
 	bar := progressbar.Default(int64(len(ecosystems)))
 
 	for _, ecosystem := range ecosystems {
+		log.Printf("Processing ecosystem: %s", ecosystem)
 		url := "https://osv-vulnerabilities.storage.googleapis.com/" + ecosystem + "/all.zip"
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Println(err)
-			return err
-		}
-		defer resp.Body.Close()
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Println(err)
-			return err
+		if err := processEcosystem(db, ecosystem, url); err != nil {
+			log.Printf("Error processing ecosystem %s: %v", ecosystem, err)
+			// Continue with other ecosystems even if one fails
 		}
 
-		zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
-		if err != nil {
-			log.Println(err)
-			return err
-		}
-
-		// Read all the files from zip archive
-		for _, zipFile := range zipReader.File {
-			// fmt.Println("Reading file:", zipFile.Name)
-			unzippedFileBytes, err := readZipFile(zipFile)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-
-			_ = unzippedFileBytes // this is unzipped file bytes
-			var result knowledge.OSVItem
-			json.Unmarshal(unzippedFileBytes, &result)
-			// result.Key = strings.ReplaceAll(ecosystem, " ", "_") + ":" + result.Id
-
-			cwe_ids_arr := []string{}
-			cve_id := ""
-
-			if _, ok := result.DatabaseSpecific["cwe_ids"]; ok {
-
-				if cwes_raw, ok := result.DatabaseSpecific["cwe_ids"].([]interface{}); ok {
-					for _, cwe_raw := range cwes_raw {
-						if cwe_string, ok := cwe_raw.(string); ok {
-							if strings.HasPrefix(cwe_string, "CWE") {
-								cwe_ids_arr = append(cwe_ids_arr, cwe_string)
-							}
-						}
-					}
-				}
-
-			}
-
-			aliases := result.Aliases
-			for _, alias := range aliases {
-				if strings.HasPrefix(alias, "CVE") {
-					cve_id = alias
-					break
-				}
-			}
-
-			result.Cve = cve_id
-			result.Cwes = cwe_ids_arr
-
-			pgsql.UpdateOsv(db, result)
-		}
 		bar.Add(1)
 	}
 	return nil
@@ -150,4 +95,102 @@ func readZipFile(zf *zip.File) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
+}
+
+// extractCWEIds efficiently extracts CWE IDs from the database specific field
+func extractCWEIds(databaseSpecific map[string]any) []string {
+	if databaseSpecific == nil {
+		return nil
+	}
+
+	cweIds, ok := databaseSpecific["cwe_ids"]
+	if !ok {
+		return nil
+	}
+
+	cwesRaw, ok := cweIds.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	var result []string
+	for _, cweRaw := range cwesRaw {
+		if cweString, ok := cweRaw.(string); ok && strings.HasPrefix(cweString, "CWE") {
+			result = append(result, cweString)
+		}
+	}
+
+	return result
+}
+
+// extractCVEId efficiently extracts the first CVE ID from aliases
+func extractCVEId(aliases []string) string {
+	for _, alias := range aliases {
+		if strings.HasPrefix(alias, "CVE") {
+			return alias
+		}
+	}
+	return ""
+}
+
+// processEcosystem downloads and processes vulnerabilities for a single ecosystem
+func processEcosystem(db *bun.DB, ecosystem, url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return fmt.Errorf("failed to read zip archive: %w", err)
+	}
+
+	// Process files in batches for better performance
+	const batchSize = 100
+	var osvBatch []knowledge.OSVItem
+
+	// Read all the files from zip archive
+	for _, zipFile := range zipReader.File {
+		unzippedFileBytes, err := readZipFile(zipFile)
+		if err != nil {
+			log.Printf("Error reading zip file %s: %v", zipFile.Name, err)
+			continue
+		}
+
+		var result knowledge.OSVItem
+		if err := json.Unmarshal(unzippedFileBytes, &result); err != nil {
+			log.Printf("Error unmarshaling JSON from %s: %v", zipFile.Name, err)
+			continue
+		}
+
+		// Extract CWE IDs and CVE ID efficiently
+		result.Cwes = extractCWEIds(result.DatabaseSpecific)
+		result.Cve = extractCVEId(result.Aliases)
+
+		// Add to batch
+		osvBatch = append(osvBatch, result)
+
+		// Process batch when it reaches the desired size
+		if len(osvBatch) >= batchSize {
+			if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
+				log.Printf("Error in batch update for ecosystem %s: %v", ecosystem, err)
+			}
+			osvBatch = osvBatch[:0] // Reset slice but keep capacity
+		}
+	}
+
+	// Process remaining items in the batch
+	if len(osvBatch) > 0 {
+		if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
+			log.Printf("Error in final batch update for ecosystem %s: %v", ecosystem, err)
+		}
+	}
+
+	return nil
 }
