@@ -19,15 +19,24 @@ func UpdateCWE(db *bun.DB, cwes []knowledge.CWEEntry) error {
 	to_insert := []knowledge.CWEEntry{}
 	to_update := []knowledge.CWEEntry{}
 
-	// Check if the CWE already exists in the database
-	// If it does, add it to the update list
-	// If it doesn't, add it to the insert list
+	// Create a map to track existing CWE IDs in the database
+	existingCWEIds := make(map[string]bool)
+
+	// Fetch all existing CWE IDs in one query
+	var dbCWEIds []string
+	err := db.NewSelect().Model((*knowledge.CWEEntry)(nil)).Column("cwe_id").Scan(ctx, &dbCWEIds)
+	if err != nil {
+		return err
+	}
+
+	// Populate the map with existing CWE IDs
+	for _, cweId := range dbCWEIds {
+		existingCWEIds[cweId] = true
+	}
+
+	// Separate records into insert and update lists
 	for _, cwe_element := range cwes {
-		exists, err := db.NewSelect().Model(&cwe_element).Where("cwe_id = ?", cwe_element.CWEId).Exists(ctx)
-		if err != nil {
-			return err
-		}
-		if exists {
+		if existingCWEIds[cwe_element.CWEId] {
 			to_update = append(to_update, cwe_element)
 		} else {
 			to_insert = append(to_insert, cwe_element)
