@@ -169,7 +169,7 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 	}
 	if resp.StatusCode != 200 {
 		log.Println("Error reading response. ", resp.Status)
-		return fmt.Errorf(resp.Status)
+		return fmt.Errorf("%s", resp.Status)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // response body is []byte
