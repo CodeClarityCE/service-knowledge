@@ -2,8 +2,8 @@ github.com/CodeClarityCE/utility-dbhelper v0.0.6-alpha h1:SxZApXen0QyPY2cwtEz42T
 github.com/CodeClarityCE/utility-dbhelper v0.0.6-alpha/go.mod h1:RkdJC0IEfUMrIRhmKUWK74gC+jg9O+gFyT2K4Gx4Z2E=
 github.com/CodeClarityCE/utility-node-semver v0.0.5-alpha h1:CaFjvEriq3NNS5WcCf0EewV+LTdEQrFu3oQ1eIkpcm0=
 github.com/CodeClarityCE/utility-node-semver v0.0.5-alpha/go.mod h1:P0HHIagqW3xceAfb50nMumNyw2U4iKi11IZIYKc11L4=
-github.com/CodeClarityCE/utility-types v0.0.9-alpha h1:3oVCY8bJCQiFE+SqojaIXTLyqMgLG8pt4UyykimuuaA=
-github.com/CodeClarityCE/utility-types v0.0.9-alpha/go.mod h1:B16Y8zw7pB2GvQgnVSFokm13xsW2L7vxYU7mnCtlB1E=
+github.com/CodeClarityCE/utility-types v0.0.10-alpha h1:tuR1urE8rCq9jsidN6UnIFhjySYUUTtBaPqmQFf7wTw=
+github.com/CodeClarityCE/utility-types v0.0.10-alpha/go.mod h1:B16Y8zw7pB2GvQgnVSFokm13xsW2L7vxYU7mnCtlB1E=
 github.com/chengxilo/virtualterm v1.0.4 h1:Z6IpERbRVlfB8WkOmtbHiDbBANU7cimRIof7mk9/PwM=
 github.com/chengxilo/virtualterm v1.0.4/go.mod h1:DyxxBZz/x1iqJjFxTFcr6/x+jSpqN0iwWCOK1q10rlY=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
