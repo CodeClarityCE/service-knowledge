@@ -55,7 +55,8 @@ func UpdateEPSS(db *bun.DB, epssScores []knowledge.EPSS) error {
 		// Bulk update
 		_, err := db.NewUpdate().
 			Model(&toUpdate).
-			Where("cve = _data.cve").
+			Table("epss").
+			Where("epss.cve = _data.cve").
 			Bulk().
 			Exec(ctx)
 		if err != nil {
