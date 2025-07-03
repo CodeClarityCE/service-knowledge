@@ -32,6 +32,13 @@ func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
 	var existingItems []knowledge.NVDItem
 
 	for _, vuln := range nvd {
+		// Skip items that are rejected or deferred
+		// This is to avoid inserting or updating items that are not relevant
+		// in the NVD database.
+		if vuln.VulnStatus == "Rejected" || vuln.VulnStatus == "Deferred" {
+			continue
+		}
+
 		exists, err := tx.NewSelect().Model(&vuln).Where("nvd_id = ?", vuln.NVDId).Exists(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to check existence for NVD item %v: %w", vuln.NVDId, err)
