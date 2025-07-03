@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/cwe"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/js"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/licenses"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
@@ -116,6 +117,13 @@ func Update() error {
 
 	// Update licenses
 	err := licenses.Update(db)
+	if err != nil {
+		log.Printf("%v", err)
+		// return err
+	}
+
+	// Update EPSS
+	err = epss.Update(db)
 	if err != nil {
 		log.Printf("%v", err)
 		// return err
