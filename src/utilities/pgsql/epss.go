@@ -13,55 +13,55 @@ import (
 // If the document exists and is successfully updated, it generates a changelog and creates a new document in the "REVISIONS" vertex collection.
 // If the document doesn't exist, it creates a new document in the "CWE" vertex collection.
 // Returns an error if any operation fails.
-func UpdateCWE(db *bun.DB, cwes []knowledge.CWEEntry) error {
+func UpdateEPSS(db *bun.DB, epssScores []knowledge.EPSS) error {
 	ctx := context.Background()
 
-	to_insert := []knowledge.CWEEntry{}
-	to_update := []knowledge.CWEEntry{}
+	toInsert := []knowledge.EPSS{}
+	toUpdate := []knowledge.EPSS{}
 
-	// Create a map to track existing CWE IDs in the database
-	existingCWEIds := make(map[string]bool)
+	// Create a map to track existing CVEs in the database
+	existingCVEs := make(map[string]bool)
 
-	// Fetch all existing CWE IDs in one query
-	var dbCWEIds []string
-	err := db.NewSelect().Model((*knowledge.CWEEntry)(nil)).Column("cwe_id").Scan(ctx, &dbCWEIds)
+	// Fetch all existing CVEs in one query
+	var dbCVEs []string
+	err := db.NewSelect().Model((*knowledge.EPSS)(nil)).Column("cve").Scan(ctx, &dbCVEs)
 	if err != nil {
 		return err
 	}
 
-	// Populate the map with existing CWE IDs
-	for _, cweId := range dbCWEIds {
-		existingCWEIds[cweId] = true
+	// Populate the map with existing CVEs
+	for _, cve := range dbCVEs {
+		existingCVEs[cve] = true
 	}
 
 	// Separate records into insert and update lists
-	for _, cwe_element := range cwes {
-		if existingCWEIds[cwe_element.CWEId] {
-			to_update = append(to_update, cwe_element)
+	for _, epss := range epssScores {
+		if existingCVEs[epss.CVE] {
+			toUpdate = append(toUpdate, epss)
 		} else {
-			to_insert = append(to_insert, cwe_element)
+			toInsert = append(toInsert, epss)
 		}
 	}
 
 	// Bulk insert
-	if len(to_insert) > 0 {
-		_, err := db.NewInsert().Model(&to_insert).Exec(ctx)
+	if len(toInsert) > 0 {
+		_, err := db.NewInsert().Model(&toInsert).Exec(ctx)
 		if err != nil {
-			panic(err)
+			return err
 		}
 	}
 
-	if len(to_update) > 0 {
+	if len(toUpdate) > 0 {
 		// Bulk update
 		_, err := db.NewUpdate().
-			Model(&to_update).
-			Where("c.cwe_id = _data.cwe_id").
+			Model(&toUpdate).
+			Table("epss").
+			Where("epss.cve = _data.cve").
 			Bulk().
 			Exec(ctx)
 		if err != nil {
-			panic(err)
+			return err
 		}
-
 	}
 
 	return nil
