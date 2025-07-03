@@ -129,13 +129,25 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 	var wg sync.WaitGroup
 	rateLimiter := make(chan struct{}, maxRequests)
 
+	// Enhance rate limiter logic to dynamically adjust sleep duration based on server response
+	var rateLimiterSleep time.Duration = 60 * time.Second / time.Duration(maxRequests)
+
 	// Fill rate limiter tokens
-	go func() {
-		for {
-			rateLimiter <- struct{}{}
-			time.Sleep(30 * time.Second / time.Duration(maxRequests))
-		}
-	}()
+	if apiKey == "" {
+		go func() {
+			for {
+				rateLimiter <- struct{}{}
+				time.Sleep(rateLimiterSleep) // Use dynamic sleep duration
+			}
+		}()
+	} else {
+		go func() {
+			for {
+				rateLimiter <- struct{}{}
+				time.Sleep(30 * time.Second / time.Duration(maxRequests))
+			}
+		}()
+	}
 
 	for i := 0; i < n_page; i++ {
 		wg.Add(1)
