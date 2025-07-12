@@ -60,8 +60,16 @@ func Setup(confirm bool) error {
 	if err != nil {
 		return err
 	}
+	err = dbhelper.CreateDatabase(dbhelper.Config.Database.Knowledge+"_test", confirm)
+	if err != nil {
+		return err
+	}
 	// Get or create Results DB
 	err = dbhelper.CreateDatabase(dbhelper.Config.Database.Results, confirm)
+	if err != nil {
+		return err
+	}
+	err = dbhelper.CreateDatabase(dbhelper.Config.Database.Results+"_test", confirm)
 	if err != nil {
 		return err
 	}
@@ -72,6 +80,10 @@ func Setup(confirm bool) error {
 	}
 	// Get or create Config DB
 	err = dbhelper.CreateDatabase(dbhelper.Config.Database.Config, confirm)
+	if err != nil {
+		return err
+	}
+	err = dbhelper.CreateDatabase(dbhelper.Config.Database.Config+"_test", confirm)
 	if err != nil {
 		return err
 	}
