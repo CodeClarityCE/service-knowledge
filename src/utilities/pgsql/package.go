@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	amqp_helper "github.com/CodeClarityCE/utility-amqp-helper"
@@ -45,9 +46,14 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 		return err
 	}
 
-	// Insert new versions
+	// Insert new versions (only stable versions)
 	var newVersions []knowledge.Version
 	for _, version := range pack.Versions {
+		// Skip preview/prerelease versions
+		if isPreviewVersion(version.Version) {
+			continue
+		}
+
 		version.PackageID = existingPackage.Id
 		found := false
 		// Check if the version already exists
@@ -266,20 +272,30 @@ func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageNam
 			}
 		}
 
-		// Also check the more detailed dependencies structure if available
+		// Also check the more detailed dependencies structure if available (but only for direct dependencies)
 		if dependencies, ok := ws["dependencies"].(map[string]interface{}); ok {
 			for depName, depData := range dependencies {
 				if depName == packageName {
 					if depVersions, ok := depData.(map[string]interface{}); ok {
 						for version, versionData := range depVersions {
 							if versionInfo, ok := versionData.(map[string]interface{}); ok {
-								// Check if this is a production dependency
-								if prod, ok := versionInfo["Prod"].(bool); ok && prod {
-									return version, "production"
+								// Check if this is a direct dependency using DirectCount (preferred) or Direct boolean
+								isDirect := false
+								if directCount, ok := versionInfo["DirectCount"].(float64); ok && directCount > 0 {
+									isDirect = true
+								} else if direct, ok := versionInfo["Direct"].(bool); ok && direct {
+									isDirect = true
 								}
-								// Check if this is a dev dependency
-								if dev, ok := versionInfo["Dev"].(bool); ok && dev {
-									return version, "development"
+
+								if isDirect {
+									// Check if this is a production dependency
+									if prod, ok := versionInfo["Prod"].(bool); ok && prod {
+										return version, "production"
+									}
+									// Check if this is a dev dependency
+									if dev, ok := versionInfo["Dev"].(bool); ok && dev {
+										return version, "development"
+									}
 								}
 							}
 						}
@@ -302,4 +318,28 @@ func compareVersions(v1, v2 string) int {
 		return -1
 	}
 	return 0
+}
+
+// isPreviewVersion checks if a version string represents a preview/prerelease version
+func isPreviewVersion(version string) bool {
+	versionLower := strings.ToLower(version)
+
+	previewKeywords := []string{
+		"alpha", "beta", "rc", "canary", "next", "dev", "experimental",
+		"preview", "pre", "snapshot", "nightly", "unstable", "-alpha",
+		"-beta", "-rc", "-canary", "-next", "-dev", "-experimental",
+		"-preview", "-pre", "-snapshot", "-nightly", "-unstable",
+		".alpha", ".beta", ".rc", ".canary", ".next", ".dev",
+		".experimental", ".preview", ".pre", ".snapshot", ".nightly",
+		".unstable", "alpha.", "beta.", "rc.", "canary.", "next.", "dev.",
+		"experimental.", "preview.", "pre.", "snapshot.", "nightly.", "unstable.",
+	}
+
+	for _, keyword := range previewKeywords {
+		if strings.Contains(versionLower, keyword) {
+			return true
+		}
+	}
+
+	return false
 }
