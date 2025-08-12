@@ -108,7 +108,7 @@ func setupDatabases(confirm bool, daemonMode bool) error {
 	if err != nil {
 		return err
 	}
-	
+
 	if !daemonMode {
 		// Only create test and shared databases in CLI mode, not in daemon mode
 		err = dbhelper.CreateDatabase(dbhelper.Config.Database.Knowledge+"_test", confirm)

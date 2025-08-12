@@ -3,6 +3,7 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.24.3
 
 require (
+	github.com/CodeClarityCE/utility-amqp-helper v0.0.6-alpha
 	github.com/CodeClarityCE/utility-dbhelper v0.0.8-alpha
 	github.com/CodeClarityCE/utility-node-semver v0.0.5-alpha
 	github.com/CodeClarityCE/utility-types v0.0.11-alpha
@@ -19,6 +20,7 @@ require (
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
+	github.com/rabbitmq/amqp091-go v1.10.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect

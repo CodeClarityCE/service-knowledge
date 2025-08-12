@@ -73,11 +73,11 @@ func main() {
 		_, err = c.AddFunc(cronExpr, func() {
 			timestamp := time.Now().Format("2006-01-02 15:04:05")
 			log.Printf("[%s] Starting scheduled knowledge update...", timestamp)
-			
+
 			start := time.Now()
 			err := knowledge.Update()
 			duration := time.Since(start)
-			
+
 			if err != nil {
 				log.Printf("[%s] ERROR: Scheduled update failed after %v: %v", timestamp, duration, err)
 			} else {
@@ -90,7 +90,7 @@ func main() {
 
 		// Start the cron scheduler
 		c.Start()
-		
+
 		if *debug {
 			log.Println("Knowledge service started in DEBUG mode - running updates every minute")
 		} else {
@@ -122,11 +122,11 @@ func main() {
 		_, err = c.AddFunc("0 */6 * * *", func() {
 			timestamp := time.Now().Format("2006-01-02 15:04:05")
 			log.Printf("[%s] Running scheduled knowledge update...", timestamp)
-			
+
 			start := time.Now()
 			err := knowledge.Update()
 			duration := time.Since(start)
-			
+
 			if err != nil {
 				log.Printf("[%s] Error during scheduled update (took %v): %v", timestamp, duration, err)
 			} else {
