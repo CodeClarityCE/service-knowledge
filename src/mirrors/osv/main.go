@@ -60,7 +60,7 @@ func Update(db *bun.DB) error {
 		// "Maven",
 		// "NuGet",
 		// "OSS-Fuzz",
-		// "Packagist",
+		"Packagist",
 		// "Pub",
 		// "PyPI",
 		// "RubyGems",
