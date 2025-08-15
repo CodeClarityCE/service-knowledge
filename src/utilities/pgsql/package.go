@@ -28,7 +28,7 @@ import (
 func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 
 	var existingPackage knowledge.Package
-	err := db.NewSelect().Model(&existingPackage).Where("name = ?", pack.Name).Scan(context.Background())
+	err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
 	if err != nil {
 		_, err := db.NewInsert().Model(&pack).Exec(context.Background())
 		if err != nil {
@@ -41,7 +41,7 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 		}
 	}
 
-	err = db.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ?", pack.Name).Scan(context.Background())
+	err = db.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 			}
 			newVersions = append(newVersions, version)
 		} else { // If the version exists, update it
-			_, err := db.NewUpdate().Model(&version).Where("'packageId' = ? and version = ?", existingPackage.Id, version.Version).Exec(context.Background())
+			_, err := db.NewUpdate().Model(&version).Where("package_id = ? and version = ?", existingPackage.Id, version.Version).Exec(context.Background())
 			if err != nil {
 				return err
 			}

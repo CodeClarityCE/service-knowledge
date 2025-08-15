@@ -101,12 +101,12 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 	maxGoroutines := 50
 	guard := make(chan struct{}, maxGoroutines)
 
-	// Get all PHP packages from database (those with vendor/ in name)
+	// Get all PHP packages from database
 	var phpPackages []knowledge.Package
 	count, err := db.NewSelect().
 		Column("name").
 		Model(&phpPackages).
-		Where("name LIKE ?", "%/%"). // PHP packages have vendor/name format
+		Where("language = ?", "php").
 		ScanAndCount(context.Background())
 	if err != nil {
 		log.Printf("Error fetching PHP packages: %v", err)
@@ -117,12 +117,6 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 	bar := progressbar.Default(int64(count))
 
 	for _, phpPackage := range phpPackages {
-		// Only process PHP packages (contain vendor/)
-		if !strings.Contains(phpPackage.Name, "/") {
-			bar.Add(1)
-			continue
-		}
-
 		wg.Add(1)
 		guard <- struct{}{}
 		go func(wg *sync.WaitGroup, packageName string) {
@@ -142,7 +136,7 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 func UpdatePackage(db *bun.DB, name string) error {
 	// Check if package exists and was recently updated
 	var existingPackage knowledge.Package
-	err := db.NewSelect().Model(&existingPackage).Where("name = ?", name).Scan(context.Background())
+	err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", name, "php").Scan(context.Background())
 	if err == nil {
 		// Check if the package was updated in the last 4 hours
 		if existingPackage.Time.After(time.Now().Add(-4 * time.Hour)) {
@@ -175,6 +169,7 @@ func UpdatePackage(db *bun.DB, name string) error {
 func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package {
 	pack := knowledge.Package{
 		Name:        packagist.Package.Name,
+		Language:    "php",
 		Description: packagist.Package.Description,
 		Homepage:    packagist.Package.Homepage,
 		Keywords:    packagist.Package.Keywords,
@@ -209,6 +204,21 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	// Process versions
 	pack.Versions = make([]knowledge.Version, 0, len(packagist.Package.Versions))
 	for version, info := range packagist.Package.Versions {
+		// Convert flexible fields to consistent format
+		var licenses []string
+		switch lic := info.License.(type) {
+		case string:
+			licenses = []string{lic}
+		case []interface{}:
+			for _, l := range lic {
+				if str, ok := l.(string); ok {
+					licenses = append(licenses, str)
+				}
+			}
+		case []string:
+			licenses = lic
+		}
+		
 		v := knowledge.Version{
 			Version: version,
 			Extra: map[string]interface{}{
@@ -216,21 +226,22 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 				"time":            info.Time,
 				"source":          info.Source,
 				"dist":            info.Dist,
-				"license":         info.License,
+				"license":         licenses,
 				"authors":         info.Authors,
 				"autoload":        info.Autoload,
 				"support":         info.Support,
-				"funding":         info.Funding,
+				"funding":         NormalizeFunding(info.Funding),
+				"extra":           info.Extra,
+				"suggest":         NormalizeDependencies(info.Suggest),
+				"provide":         NormalizeDependencies(info.Provide),
+				"replace":         NormalizeDependencies(info.Replace),
+				"conflict":        NormalizeDependencies(info.Conflict),
 			},
 		}
 		
-		// Convert dependencies
-		if len(info.Require) > 0 {
-			v.Dependencies = info.Require
-		}
-		if len(info.RequireDev) > 0 {
-			v.DevDependencies = info.RequireDev
-		}
+		// Convert dependencies - normalize to handle flexible types
+		v.Dependencies = NormalizeDependencies(info.Require)
+		v.DevDependencies = NormalizeDependencies(info.RequireDev)
 		
 		pack.Versions = append(pack.Versions, v)
 	}
@@ -252,16 +263,33 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	// Extract license information
 	if len(pack.Versions) > 0 {
 		for _, info := range packagist.Package.Versions {
-			if info.Version == latestVersion && len(info.License) > 0 {
-				pack.License = strings.Join(info.License, ", ")
-				pack.Licenses = make([]knowledge.LicenseNpm, len(info.License))
-				for i, lic := range info.License {
-					pack.Licenses[i] = knowledge.LicenseNpm{
-						Type: lic,
-						Url:  "",
+			if info.Version == latestVersion {
+				// Handle flexible license type
+				var licenses []string
+				switch lic := info.License.(type) {
+				case string:
+					licenses = []string{lic}
+				case []interface{}:
+					for _, l := range lic {
+						if str, ok := l.(string); ok {
+							licenses = append(licenses, str)
+						}
 					}
+				case []string:
+					licenses = lic
 				}
-				break
+				
+				if len(licenses) > 0 {
+					pack.License = strings.Join(licenses, ", ")
+					pack.Licenses = make([]knowledge.LicenseNpm, len(licenses))
+					for i, lic := range licenses {
+						pack.Licenses[i] = knowledge.LicenseNpm{
+							Type: lic,
+							Url:  "",
+						}
+					}
+					break
+				}
 			}
 		}
 	}

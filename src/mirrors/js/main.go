@@ -97,7 +97,7 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 	guard := make(chan struct{}, maxGoroutines)
 
 	var npmPackages []knowledge.Package
-	count, err := db.NewSelect().Column("name").Model(&npmPackages).ScanAndCount(context.Background())
+	count, err := db.NewSelect().Column("name").Model(&npmPackages).Where("language = ?", "javascript").ScanAndCount(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -135,7 +135,7 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 // - An error if any occurred during the update process, or nil if the update was successful.
 func UpdatePackage(db *bun.DB, name string) error {
 	var existingPackage knowledge.Package
-	err := db.NewSelect().Model(&existingPackage).Where("name = ?", name).Scan(context.Background())
+	err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", name, "javascript").Scan(context.Background())
 	if err == nil {
 		// Check if the package was updated in the last 4 hours
 		if existingPackage.Time.After(time.Now().Add(-4 * time.Hour)) {

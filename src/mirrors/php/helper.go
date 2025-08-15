@@ -33,25 +33,25 @@ type PackagistVersionInfo struct {
 	VersionNormalized  string                 `json:"version_normalized"`
 	Source             PackagistSource        `json:"source"`
 	Dist               PackagistDist          `json:"dist"`
-	Require            map[string]string      `json:"require"`
-	RequireDev         map[string]string      `json:"require-dev"`
-	Suggest            map[string]string      `json:"suggest"`
-	Provide            map[string]string      `json:"provide"`
-	Replace            map[string]string      `json:"replace"`
-	Conflict           map[string]string      `json:"conflict"`
+	Require            interface{}            `json:"require"`      // Can be map[string]string or string
+	RequireDev         interface{}            `json:"require-dev"`  // Can be map[string]string or string
+	Suggest            interface{}            `json:"suggest"`      // Can be map[string]string or string
+	Provide            interface{}            `json:"provide"`      // Can be map[string]string or string
+	Replace            interface{}            `json:"replace"`      // Can be map[string]string or string
+	Conflict           interface{}            `json:"conflict"`     // Can be map[string]string or string
 	Time               string                 `json:"time"`
 	Type               string                 `json:"type"`
-	Extra              map[string]interface{} `json:"extra"`
+	Extra              interface{}            `json:"extra"` // Can be string or map
 	InstallationSource string                 `json:"installation-source"`
-	Autoload           map[string]interface{} `json:"autoload"`
+	Autoload           interface{}            `json:"autoload"` // Can be map or string
 	NotificationUrl    string                 `json:"notification-url"`
-	License            []string               `json:"license"`
+	License            interface{}            `json:"license"` // Can be string or []string
 	Authors            []PackagistAuthor      `json:"authors"`
 	Description        string                 `json:"description"`
 	Keywords           []string               `json:"keywords"`
 	Homepage           string                 `json:"homepage"`
-	Support            map[string]string      `json:"support"`
-	Funding            []PackagistFunding     `json:"funding"`
+	Support            interface{}            `json:"support"` // Can be map or string
+	Funding            interface{}            `json:"funding"` // Can be string or []PackagistFunding
 }
 
 type PackagistSource struct {
@@ -204,6 +204,54 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 	}
 	
 	return result, nil
+}
+
+// NormalizeDependencies converts various dependency formats to a consistent map[string]string
+func NormalizeDependencies(deps interface{}) map[string]string {
+	if deps == nil {
+		return nil
+	}
+	
+	switch d := deps.(type) {
+	case map[string]interface{}:
+		result := make(map[string]string)
+		for k, v := range d {
+			if str, ok := v.(string); ok {
+				result[k] = str
+			}
+		}
+		return result
+	case map[string]string:
+		return d
+	case string:
+		// If it's a single string, return empty map
+		return make(map[string]string)
+	default:
+		return nil
+	}
+}
+
+// NormalizeFunding converts various funding formats to a consistent structure
+func NormalizeFunding(funding interface{}) interface{} {
+	if funding == nil {
+		return nil
+	}
+	
+	switch f := funding.(type) {
+	case string:
+		// If it's a string URL, convert to single funding object
+		return []map[string]string{
+			{"type": "custom", "url": f},
+		}
+	case []interface{}:
+		// Already an array, return as is
+		return f
+	case map[string]interface{}:
+		// Single funding object, wrap in array
+		return []interface{}{f}
+	default:
+		return funding
+	}
 }
 
 // searchPackagist searches for packages on Packagist.org
