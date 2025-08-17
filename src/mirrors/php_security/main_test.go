@@ -26,7 +26,7 @@ func TestConvertFriendsOfPHPToOSV(t *testing.T) {
 
 	result := convertFriendsOfPHPToOSV("vendor/package/001", advisory)
 
-	assert.Equal(t, "FRIENDSOFPHP-vendor/package/001", result.Id)
+	assert.Equal(t, "FRIENDSOFPHP-vendor/package/001", result.OSVId)
 	assert.Equal(t, "Test Security Advisory", result.Summary)
 	assert.Equal(t, "Test advisory description", result.Details)
 	assert.Contains(t, result.Aliases, "CVE-2024-TEST-001")
@@ -50,7 +50,7 @@ func TestConvertPHPCoreToOSV(t *testing.T) {
 
 	result := convertPHPCoreToOSV(vuln)
 
-	assert.Equal(t, "CVE-2024-PHP-001", result.Id)
+	assert.Equal(t, "CVE-2024-PHP-001", result.OSVId)
 	assert.Equal(t, "Test PHP Core Vulnerability", result.Summary)
 	assert.Equal(t, "Test vulnerability in PHP core", result.Details)
 	assert.Contains(t, result.Aliases, "CVE-2024-PHP-001")

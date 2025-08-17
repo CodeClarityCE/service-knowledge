@@ -28,30 +28,30 @@ type PackagistPackageDetails struct {
 }
 
 type PackagistVersionInfo struct {
-	Name               string                 `json:"name"`
-	Version            string                 `json:"version"`
-	VersionNormalized  string                 `json:"version_normalized"`
-	Source             PackagistSource        `json:"source"`
-	Dist               PackagistDist          `json:"dist"`
-	Require            interface{}            `json:"require"`      // Can be map[string]string or string
-	RequireDev         interface{}            `json:"require-dev"`  // Can be map[string]string or string
-	Suggest            interface{}            `json:"suggest"`      // Can be map[string]string or string
-	Provide            interface{}            `json:"provide"`      // Can be map[string]string or string
-	Replace            interface{}            `json:"replace"`      // Can be map[string]string or string
-	Conflict           interface{}            `json:"conflict"`     // Can be map[string]string or string
-	Time               string                 `json:"time"`
-	Type               string                 `json:"type"`
-	Extra              interface{}            `json:"extra"` // Can be string or map
-	InstallationSource string                 `json:"installation-source"`
-	Autoload           interface{}            `json:"autoload"` // Can be map or string
-	NotificationUrl    string                 `json:"notification-url"`
-	License            interface{}            `json:"license"` // Can be string or []string
-	Authors            []PackagistAuthor      `json:"authors"`
-	Description        string                 `json:"description"`
-	Keywords           []string               `json:"keywords"`
-	Homepage           string                 `json:"homepage"`
-	Support            interface{}            `json:"support"` // Can be map or string
-	Funding            interface{}            `json:"funding"` // Can be string or []PackagistFunding
+	Name               string            `json:"name"`
+	Version            string            `json:"version"`
+	VersionNormalized  string            `json:"version_normalized"`
+	Source             PackagistSource   `json:"source"`
+	Dist               PackagistDist     `json:"dist"`
+	Require            interface{}       `json:"require"`     // Can be map[string]string or string
+	RequireDev         interface{}       `json:"require-dev"` // Can be map[string]string or string
+	Suggest            interface{}       `json:"suggest"`     // Can be map[string]string or string
+	Provide            interface{}       `json:"provide"`     // Can be map[string]string or string
+	Replace            interface{}       `json:"replace"`     // Can be map[string]string or string
+	Conflict           interface{}       `json:"conflict"`    // Can be map[string]string or string
+	Time               string            `json:"time"`
+	Type               string            `json:"type"`
+	Extra              interface{}       `json:"extra"` // Can be string or map
+	InstallationSource string            `json:"installation-source"`
+	Autoload           interface{}       `json:"autoload"` // Can be map or string
+	NotificationUrl    string            `json:"notification-url"`
+	License            interface{}       `json:"license"` // Can be string or []string
+	Authors            []PackagistAuthor `json:"authors"`
+	Description        string            `json:"description"`
+	Keywords           []string          `json:"keywords"`
+	Homepage           string            `json:"homepage"`
+	Support            interface{}       `json:"support"` // Can be map or string
+	Funding            interface{}       `json:"funding"` // Can be string or []PackagistFunding
 }
 
 type PackagistSource struct {
@@ -99,25 +99,25 @@ type PackagistSearchItem struct {
 func downloadPackagist(packageName string) (*PackagistPackage, error) {
 	// Clean package name
 	packageName = strings.TrimSpace(packageName)
-	
+
 	// Build URL for Packagist API v2
 	apiUrl := fmt.Sprintf("https://repo.packagist.org/p2/%s.json", url.QueryEscape(packageName))
-	
+
 	// Create HTTP request
 	req, err := http.NewRequest("GET", apiUrl, nil)
 	if err != nil {
 		log.Printf("Error creating request for package %s: %v", packageName, err)
 		return nil, err
 	}
-	
+
 	// Set User-Agent header (required by Packagist)
 	req.Header.Set("User-Agent", "CodeClarity/1.0")
-	
+
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-	
+
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
@@ -125,7 +125,7 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	// Handle response status
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 404 {
@@ -139,36 +139,36 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 			return nil, fmt.Errorf("failed to fetch package %s: HTTP %d", packageName, resp.StatusCode)
 		}
 	}
-	
+
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Error reading response for package %s: %v", packageName, err)
 		return nil, err
 	}
-	
+
 	// Parse JSON response
 	// Packagist v2 API returns packages in a wrapper object
 	var wrapper struct {
 		Packages map[string][]PackagistVersionInfo `json:"packages"`
 	}
-	
+
 	err = json.Unmarshal(body, &wrapper)
 	if err != nil {
 		log.Printf("Error unmarshaling response for package %s: %v", packageName, err)
 		return nil, err
 	}
-	
+
 	// Extract package versions
 	versions, ok := wrapper.Packages[packageName]
 	if !ok {
 		return nil, fmt.Errorf("package %s not found in response", packageName)
 	}
-	
+
 	if len(versions) == 0 {
 		return nil, fmt.Errorf("no versions found for package %s", packageName)
 	}
-	
+
 	// Convert to our internal format
 	result := &PackagistPackage{
 		Package: PackagistPackageDetails{
@@ -176,12 +176,12 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 			Versions: make(map[string]PackagistVersionInfo),
 		},
 	}
-	
+
 	// Process versions and extract package metadata from latest stable version
 	var latestStable *PackagistVersionInfo
 	for _, version := range versions {
 		result.Package.Versions[version.Version] = version
-		
+
 		// Track latest stable version for metadata
 		if !strings.Contains(version.Version, "-") && !strings.Contains(version.Version, "dev") {
 			if latestStable == nil || version.Time > latestStable.Time {
@@ -189,12 +189,12 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 			}
 		}
 	}
-	
+
 	// Use latest stable version for package metadata, or first version if no stable found
 	if latestStable == nil && len(versions) > 0 {
 		latestStable = &versions[0]
 	}
-	
+
 	if latestStable != nil {
 		result.Package.Description = latestStable.Description
 		result.Package.Homepage = latestStable.Homepage
@@ -202,7 +202,7 @@ func downloadPackagist(packageName string) (*PackagistPackage, error) {
 		result.Package.Type = latestStable.Type
 		result.Package.Time = latestStable.Time
 	}
-	
+
 	return result, nil
 }
 
@@ -211,7 +211,7 @@ func NormalizeDependencies(deps interface{}) map[string]string {
 	if deps == nil {
 		return nil
 	}
-	
+
 	switch d := deps.(type) {
 	case map[string]interface{}:
 		result := make(map[string]string)
@@ -236,7 +236,7 @@ func NormalizeFunding(funding interface{}) interface{} {
 	if funding == nil {
 		return nil
 	}
-	
+
 	switch f := funding.(type) {
 	case string:
 		// If it's a string URL, convert to single funding object
@@ -258,38 +258,38 @@ func NormalizeFunding(funding interface{}) interface{} {
 func searchPackagist(query string, page int) (*PackagistSearchResult, error) {
 	// Build search URL
 	searchUrl := fmt.Sprintf("https://packagist.org/search.json?q=%s&page=%d", url.QueryEscape(query), page)
-	
+
 	// Create HTTP request
 	req, err := http.NewRequest("GET", searchUrl, nil)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Set User-Agent header
 	req.Header.Set("User-Agent", "CodeClarity/1.0")
-	
+
 	// Create HTTP client
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-	
+
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("search failed: HTTP %d", resp.StatusCode)
 	}
-	
+
 	// Parse response
 	var result PackagistSearchResult
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &result, nil
 }

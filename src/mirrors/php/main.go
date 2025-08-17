@@ -179,26 +179,26 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	// Find latest stable version
 	var latestVersion string
 	var latestTime time.Time
-	
+
 	for version, info := range packagist.Package.Versions {
 		// Skip dev versions
 		if strings.Contains(version, "dev") {
 			continue
 		}
-		
+
 		// Parse time
 		versionTime, err := time.Parse(time.RFC3339, info.Time)
 		if err != nil {
 			continue
 		}
-		
+
 		// Check if this is the latest
 		if versionTime.After(latestTime) {
 			latestTime = versionTime
 			latestVersion = version
 		}
 	}
-	
+
 	pack.LatestVersion = latestVersion
 
 	// Process versions
@@ -218,31 +218,31 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 		case []string:
 			licenses = lic
 		}
-		
+
 		v := knowledge.Version{
 			Version: version,
 			Extra: map[string]interface{}{
-				"type":            info.Type,
-				"time":            info.Time,
-				"source":          info.Source,
-				"dist":            info.Dist,
-				"license":         licenses,
-				"authors":         info.Authors,
-				"autoload":        info.Autoload,
-				"support":         info.Support,
-				"funding":         NormalizeFunding(info.Funding),
-				"extra":           info.Extra,
-				"suggest":         NormalizeDependencies(info.Suggest),
-				"provide":         NormalizeDependencies(info.Provide),
-				"replace":         NormalizeDependencies(info.Replace),
-				"conflict":        NormalizeDependencies(info.Conflict),
+				"type":     info.Type,
+				"time":     info.Time,
+				"source":   info.Source,
+				"dist":     info.Dist,
+				"license":  licenses,
+				"authors":  info.Authors,
+				"autoload": info.Autoload,
+				"support":  info.Support,
+				"funding":  NormalizeFunding(info.Funding),
+				"extra":    info.Extra,
+				"suggest":  NormalizeDependencies(info.Suggest),
+				"provide":  NormalizeDependencies(info.Provide),
+				"replace":  NormalizeDependencies(info.Replace),
+				"conflict": NormalizeDependencies(info.Conflict),
 			},
 		}
-		
+
 		// Convert dependencies - normalize to handle flexible types
 		v.Dependencies = NormalizeDependencies(info.Require)
 		v.DevDependencies = NormalizeDependencies(info.RequireDev)
-		
+
 		pack.Versions = append(pack.Versions, v)
 	}
 
@@ -278,7 +278,7 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 				case []string:
 					licenses = lic
 				}
-				
+
 				if len(licenses) > 0 {
 					pack.License = strings.Join(licenses, ", ")
 					pack.Licenses = make([]knowledge.LicenseNpm, len(licenses))

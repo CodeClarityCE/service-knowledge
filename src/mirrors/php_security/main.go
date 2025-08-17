@@ -22,17 +22,17 @@ type PackagistSecurityResponse struct {
 
 // PackagistAdvisory represents a single security advisory from Packagist
 type PackagistAdvisory struct {
-	AdvisoryID         string                   `json:"advisoryId"`
-	PackageName        string                   `json:"packageName"`
-	RemoteID           string                   `json:"remoteId"`
-	Title              string                   `json:"title"`
-	Link               string                   `json:"link"`
-	CVE                string                   `json:"cve"`
-	AffectedVersions   string                   `json:"affectedVersions"`
-	Source             string                   `json:"source"`
-	ReportedAt         string                   `json:"reportedAt"`
-	ComposerRepository string                   `json:"composerRepository"`
-	Severity           *string                  `json:"severity"`
+	AdvisoryID         string                    `json:"advisoryId"`
+	PackageName        string                    `json:"packageName"`
+	RemoteID           string                    `json:"remoteId"`
+	Title              string                    `json:"title"`
+	Link               string                    `json:"link"`
+	CVE                string                    `json:"cve"`
+	AffectedVersions   string                    `json:"affectedVersions"`
+	Source             string                    `json:"source"`
+	ReportedAt         string                    `json:"reportedAt"`
+	ComposerRepository string                    `json:"composerRepository"`
+	Severity           *string                   `json:"severity"`
 	Sources            []PackagistAdvisorySource `json:"sources"`
 }
 
@@ -41,7 +41,6 @@ type PackagistAdvisorySource struct {
 	Name     string `json:"name"`
 	RemoteID string `json:"remoteId"`
 }
-
 
 // Update updates the PHP security advisories from FriendsOfPHP
 func Update(db *bun.DB) error {
@@ -65,7 +64,7 @@ func updateFriendsOfPHPAdvisories(db *bun.DB) error {
 	// 1. Get list of all packages from analyzed projects
 	// 2. Query Packagist for packages that exist in your database
 	// For demonstration, we'll use a comprehensive list of popular PHP packages
-	
+
 	popularPackages := []string{
 		"symfony/symfony",
 		"symfony/http-foundation",
@@ -92,12 +91,9 @@ func updateFriendsOfPHPAdvisories(db *bun.DB) error {
 	// Batch requests for efficiency (Packagist supports multiple packages per request)
 	batchSize := 10
 	for i := 0; i < len(popularPackages); i += batchSize {
-		end := i + batchSize
-		if end > len(popularPackages) {
-			end = len(popularPackages)
-		}
+		end := min(i+batchSize, len(popularPackages))
 		batch := popularPackages[i:end]
-		
+
 		log.Printf("Fetching advisories for batch %d-%d of %d packages", i+1, end, len(popularPackages))
 		if err := fetchBatchAdvisories(db, batch); err != nil {
 			log.Printf("Error fetching batch advisories: %v", err)
@@ -118,7 +114,7 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 		}
 		url += fmt.Sprintf("packages[]=%s", pkg)
 	}
-	
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to fetch advisories: %w", err)
@@ -153,14 +149,13 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 			totalAdvisories += len(advisories)
 		}
 	}
-	
+
 	if totalAdvisories > 0 {
 		log.Printf("Total advisories in batch: %d", totalAdvisories)
 	}
 
 	return nil
 }
-
 
 // convertPackagistToDBModel converts a Packagist advisory to database model
 func convertPackagistToDBModel(advisory PackagistAdvisory) knowledge.FriendsOfPHPAdvisory {
@@ -187,3 +182,148 @@ func convertPackagistToDBModel(advisory PackagistAdvisory) knowledge.FriendsOfPH
 	}
 }
 
+// Legacy types and functions for compatibility with tests
+
+// FriendsOfPHPAdvisory represents a FriendsOfPHP advisory (legacy alias)
+type FriendsOfPHPAdvisory = knowledge.FriendsOfPHPAdvisory
+
+// AdvisoryBranch represents an advisory branch (legacy alias)
+type AdvisoryBranch = knowledge.AdvisoryBranch
+
+// PHPCoreVulnerability represents a PHP core vulnerability
+type PHPCoreVulnerability struct {
+	CVE         string    `json:"cve"`
+	Summary     string    `json:"summary"`
+	Description string    `json:"description"`
+	Published   time.Time `json:"published"`
+	Modified    time.Time `json:"modified"`
+	Severity    string    `json:"severity"`
+	CVSS        float64   `json:"cvss"`
+	References  []string  `json:"references"`
+	Versions    []string  `json:"versions"`
+}
+
+// convertFriendsOfPHPToOSV converts a FriendsOfPHP advisory to OSV format
+func convertFriendsOfPHPToOSV(id string, advisory FriendsOfPHPAdvisory) knowledge.OSVItem {
+	// Extract affected versions from branches
+	var affectedVersions []string
+	for _, branch := range advisory.Branches {
+		affectedVersions = append(affectedVersions, branch.Versions...)
+	}
+
+	// Create OSV affected entry
+	affected := []knowledge.Affected{
+		{
+			Package: knowledge.OSVPackage{
+				Ecosystem: "Packagist",
+				Name:      advisory.Composer,
+			},
+			Versions: affectedVersions,
+		},
+	}
+
+	// Create references
+	references := []knowledge.Reference{
+		{
+			Type: "ADVISORY",
+			Url:  advisory.Link,
+		},
+	}
+	if advisory.Reference != "" {
+		references = append(references, knowledge.Reference{
+			Type: "WEB",
+			Url:  advisory.Reference,
+		})
+	}
+
+	// Set aliases (CVE if available)
+	var aliases []string
+	if advisory.CVE != "" {
+		aliases = append(aliases, advisory.CVE)
+	}
+
+	return knowledge.OSVItem{
+		OSVId:      "FRIENDSOFPHP-" + id,
+		Summary:    advisory.Title,
+		Details:    advisory.Description,
+		Aliases:    aliases,
+		Published:  advisory.Published,
+		Modified:   advisory.Modified,
+		References: references,
+		Affected:   affected,
+		DatabaseSpecific: map[string]any{
+			"source":      "FriendsOfPHP",
+			"advisory_id": advisory.AdvisoryId,
+		},
+	}
+}
+
+// convertPHPCoreToOSV converts a PHP core vulnerability to OSV format
+func convertPHPCoreToOSV(vuln PHPCoreVulnerability) knowledge.OSVItem {
+	// Create OSV affected entry for PHP core
+	affected := []knowledge.Affected{
+		{
+			Package: knowledge.OSVPackage{
+				Ecosystem: "PHP-Core",
+				Name:      "php",
+			},
+			Versions: vuln.Versions,
+		},
+	}
+
+	// Create references
+	references := []knowledge.Reference{}
+	for _, ref := range vuln.References {
+		references = append(references, knowledge.Reference{
+			Type: "WEB",
+			Url:  ref,
+		})
+	}
+
+	// Create severity
+	severity := []knowledge.Severity{
+		{
+			Type:  "CVSS_V3",
+			Score: fmt.Sprintf("%.1f", vuln.CVSS),
+		},
+	}
+
+	// Set aliases
+	var aliases []string
+	if vuln.CVE != "" {
+		aliases = append(aliases, vuln.CVE)
+	}
+
+	return knowledge.OSVItem{
+		OSVId:      vuln.CVE,
+		Summary:    vuln.Summary,
+		Details:    vuln.Description,
+		Aliases:    aliases,
+		Published:  vuln.Published.Format(time.RFC3339),
+		Modified:   vuln.Modified.Format(time.RFC3339),
+		References: references,
+		Affected:   affected,
+		Severity:   severity,
+		DatabaseSpecific: map[string]any{
+			"source":   "PHP-Core",
+			"severity": vuln.Severity,
+		},
+	}
+}
+
+// createSamplePHPCoreVulnerabilities creates sample PHP core vulnerabilities for testing
+func createSamplePHPCoreVulnerabilities(_ string) []PHPCoreVulnerability {
+	return []PHPCoreVulnerability{
+		{
+			CVE:         "CVE-2024-PHP-001",
+			Summary:     "Buffer overflow in PHP core",
+			Description: "A buffer overflow vulnerability was found in PHP core that could lead to remote code execution",
+			Published:   time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			Modified:    time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+			Severity:    "HIGH",
+			CVSS:        7.5,
+			References:  []string{"https://php.net/security", "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2024-PHP-001"},
+			Versions:    []string{"< 8.3.0"},
+		},
+	}
+}
