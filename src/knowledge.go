@@ -14,6 +14,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/licenses"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -209,6 +210,13 @@ func Update() error {
 	}
 
 	err = nvd.Update(db, db_config)
+	if err != nil {
+		log.Printf("%v", err)
+		// return err
+	}
+
+	// Update PHP security advisories (FriendsOfPHP Security Advisories)
+	err = php_security.Update(db)
 	if err != nil {
 		log.Printf("%v", err)
 		// return err
