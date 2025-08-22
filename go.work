@@ -3,7 +3,9 @@ go 1.24.3
 toolchain go1.24.1
 
 use (
-	.
+	../../utilities/amqp-helper
 	../../utilities/db-helper
+	../../utilities/node-semver
 	../../utilities/types
+	./
 )
