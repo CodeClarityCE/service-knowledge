@@ -3,11 +3,11 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.24.3
 
 require (
-	github.com/CodeClarityCE/utility-amqp-helper v0.0.6-alpha
+	github.com/CodeClarityCE/utility-amqp-helper v0.0.7-alpha
 	github.com/CodeClarityCE/utility-boilerplates v0.0.1
-	github.com/CodeClarityCE/utility-dbhelper v0.0.8-alpha
-	github.com/CodeClarityCE/utility-node-semver v0.0.5-alpha
-	github.com/CodeClarityCE/utility-types v0.0.11-alpha
+	github.com/CodeClarityCE/utility-dbhelper v0.0.9-alpha
+	github.com/CodeClarityCE/utility-node-semver v0.0.6-alpha
+	github.com/CodeClarityCE/utility-types v0.0.12-alpha
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/stretchr/testify v1.11.0
