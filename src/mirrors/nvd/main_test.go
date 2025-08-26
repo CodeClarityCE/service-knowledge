@@ -1,32 +1,20 @@
 package nvd
 
 import (
-	"database/sql"
 	"os"
 	"testing"
-	"time"
 
-	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 )
 
 func TestUpdate(t *testing.T) {
 	os.Setenv("NVD_API_KEY", "")
-	os.Setenv("PG_DB_HOST", "127.0.0.1")
-	os.Setenv("PG_DB_PORT", "5432")
-	os.Setenv("PG_DB_USER", "postgres")
-	os.Setenv("PG_DB_PASSWORD", "!ChangeMe!")
-	dsn_knowledge := "postgres://postgres:!ChangeMe!@127.0.0.1:5432/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
-	sqldb_knowledge := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_knowledge), pgdriver.WithTimeout(50*time.Second)))
-	db_knowledge := bun.NewDB(sqldb_knowledge, pgdialect.New())
-	defer db_knowledge.Close()
 
-	dsn_config := "postgres://postgres:!ChangeMe!@127.0.0.1:5432/" + dbhelper.Config.Database.Config + "?sslmode=disable"
-	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
-	db_config := bun.NewDB(sqldb_config, pgdialect.New())
-	defer db_knowledge.Close()
+	db_knowledge, db_config, cleanup := testhelper.SetupKnowledgeAndConfigTestDB(t)
+	if db_knowledge == nil {
+		return // Test was skipped
+	}
+	defer cleanup()
 
 	err := Update(db_knowledge, db_config)
 	if err != nil {

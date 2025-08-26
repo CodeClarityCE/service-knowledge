@@ -41,7 +41,15 @@ func main() {
 			log.Println("Knowledge setup completed successfully")
 		case "update":
 			log.Println("Running knowledge update...")
-			err := knowledge.Update()
+
+			// Create knowledge service for database connections
+			knowledgeService, err := CreateKnowledgeService()
+			if err != nil {
+				log.Fatalf("Failed to create knowledge service: %v", err)
+			}
+			defer knowledgeService.Close()
+
+			err = knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 			if err != nil {
 				log.Fatalf("Failed to update knowledge: %v", err)
 			}
@@ -54,8 +62,15 @@ func main() {
 		// Daemon mode - for Docker containers with cron scheduler
 		log.Println("Starting knowledge service in daemon mode with cron scheduler...")
 
+		// Create knowledge service for database connections
+		knowledgeService, err := CreateKnowledgeService()
+		if err != nil {
+			log.Fatalf("Failed to create knowledge service: %v", err)
+		}
+		defer knowledgeService.Close()
+
 		// Initial setup (daemon-safe - only touches knowledge database)
-		err := knowledge.SetupForDaemon()
+		err = knowledge.SetupForDaemon(knowledgeService.DB.Knowledge)
 		if err != nil {
 			log.Fatalf("Failed to setup knowledge service: %v", err)
 		}
@@ -75,7 +90,7 @@ func main() {
 			log.Printf("[%s] Starting scheduled knowledge update...", timestamp)
 
 			start := time.Now()
-			err := knowledge.Update()
+			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 			duration := time.Since(start)
 
 			if err != nil {
@@ -109,8 +124,15 @@ func main() {
 		// Default mode - backward compatibility (run as daemon)
 		log.Println("Starting knowledge service with cron scheduler (default mode)...")
 
+		// Create knowledge service for database connections
+		knowledgeService, err := CreateKnowledgeService()
+		if err != nil {
+			log.Fatalf("Failed to create knowledge service: %v", err)
+		}
+		defer knowledgeService.Close()
+
 		// Initial setup (daemon-safe - only touches knowledge database)
-		err := knowledge.SetupForDaemon()
+		err = knowledge.SetupForDaemon(knowledgeService.DB.Knowledge)
 		if err != nil {
 			log.Fatalf("Failed to setup knowledge service: %v", err)
 		}
@@ -124,7 +146,7 @@ func main() {
 			log.Printf("[%s] Running scheduled knowledge update...", timestamp)
 
 			start := time.Now()
-			err := knowledge.Update()
+			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 			duration := time.Since(start)
 
 			if err != nil {

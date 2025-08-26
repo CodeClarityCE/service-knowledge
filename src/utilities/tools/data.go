@@ -13,6 +13,7 @@ import (
 func CreatePackageInfoNpm(result types.Npm) knowledge.Package {
 	var pack knowledge.Package
 	pack.Name = result.Name
+	pack.Language = "javascript"
 	pack.Description = result.Description
 	pack.Homepage = result.Homepage
 	pack.LatestVersion = types.GetLatestVersion(result.Versions)
