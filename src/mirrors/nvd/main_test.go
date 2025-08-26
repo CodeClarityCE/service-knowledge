@@ -9,7 +9,7 @@ import (
 
 func TestUpdate(t *testing.T) {
 	os.Setenv("NVD_API_KEY", "")
-	
+
 	db_knowledge, db_config, cleanup := testhelper.SetupKnowledgeAndConfigTestDB(t)
 	if db_knowledge == nil {
 		return // Test was skipped

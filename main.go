@@ -41,14 +41,14 @@ func main() {
 			log.Println("Knowledge setup completed successfully")
 		case "update":
 			log.Println("Running knowledge update...")
-			
+
 			// Create knowledge service for database connections
 			knowledgeService, err := CreateKnowledgeService()
 			if err != nil {
 				log.Fatalf("Failed to create knowledge service: %v", err)
 			}
 			defer knowledgeService.Close()
-			
+
 			err = knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 			if err != nil {
 				log.Fatalf("Failed to update knowledge: %v", err)

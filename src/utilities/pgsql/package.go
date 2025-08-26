@@ -21,25 +21,25 @@ import (
 
 // Optimized connection pool and prepared statement management
 type OptimizedPackageManager struct {
-	db                  *bun.DB
-	mu                  sync.RWMutex
-	
+	db *bun.DB
+	mu sync.RWMutex
+
 	// Prepared statements for batch operations
-	packageInsertStmt    *bun.InsertQuery
-	packageUpdateStmt    *bun.UpdateQuery
-	packageSelectStmt    *bun.SelectQuery
-	versionInsertStmt    *bun.InsertQuery
-	versionUpdateStmt    *bun.UpdateQuery
-	versionSelectStmt    *bun.SelectQuery
-	
+	packageInsertStmt *bun.InsertQuery
+	packageUpdateStmt *bun.UpdateQuery
+	packageSelectStmt *bun.SelectQuery
+	versionInsertStmt *bun.InsertQuery
+	versionUpdateStmt *bun.UpdateQuery
+	versionSelectStmt *bun.SelectQuery
+
 	// Connection pool configuration
-	maxOpenConns         int
-	maxIdleConns         int
-	connMaxLifetime      time.Duration
-	connMaxIdleTime      time.Duration
-	
+	maxOpenConns    int
+	maxIdleConns    int
+	connMaxLifetime time.Duration
+	connMaxIdleTime time.Duration
+
 	// Performance metrics
-	stats                PerformanceStats
+	stats PerformanceStats
 }
 
 type PerformanceStats struct {
@@ -49,8 +49,8 @@ type PerformanceStats struct {
 	AverageBatchProcessingTime time.Duration
 	ConnectionReuseCount       int64
 	PreparedStatementHitCount  int64
-	TotalErrorCount           int64
-	LastOptimizationTime      time.Time
+	TotalErrorCount            int64
+	LastOptimizationTime       time.Time
 }
 
 // NewOptimizedPackageManager creates a new optimized package manager with connection pooling
@@ -65,15 +65,15 @@ func NewOptimizedPackageManager(db *bun.DB) *OptimizedPackageManager {
 			LastOptimizationTime: time.Now(),
 		},
 	}
-	
+
 	// Configure connection pooling
 	manager.configureConnectionPool()
-	
+
 	// Prepare commonly used statements
 	manager.prepareStatements()
-	
+
 	log.Println("Initialized optimized package manager with connection pooling")
-	
+
 	return manager
 }
 
@@ -84,8 +84,8 @@ func (opm *OptimizedPackageManager) configureConnectionPool() {
 	sqlDB.SetMaxIdleConns(opm.maxIdleConns)
 	sqlDB.SetConnMaxLifetime(opm.connMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(opm.connMaxIdleTime)
-	
-	log.Printf("Database connection pool configured: max_open=%d, max_idle=%d, max_lifetime=%v", 
+
+	log.Printf("Database connection pool configured: max_open=%d, max_idle=%d, max_lifetime=%v",
 		opm.maxOpenConns, opm.maxIdleConns, opm.connMaxLifetime)
 }
 
@@ -96,13 +96,13 @@ func (opm *OptimizedPackageManager) prepareStatements() {
 	opm.packageSelectStmt = opm.db.NewSelect().Model(&dummyPackage).Where("name = ? AND language = ?", "", "")
 	opm.packageInsertStmt = opm.db.NewInsert().Model(&dummyPackage)
 	opm.packageUpdateStmt = opm.db.NewUpdate().Model(&dummyPackage).Where("id = ?", 0)
-	
-	// Prepare version-related statements  
+
+	// Prepare version-related statements
 	var dummyVersion knowledge.Version
 	opm.versionSelectStmt = opm.db.NewSelect().Model(&dummyVersion).Where("package_id = ? AND version = ?", 0, "")
 	opm.versionInsertStmt = opm.db.NewInsert().Model(&dummyVersion)
 	opm.versionUpdateStmt = opm.db.NewUpdate().Model(&dummyVersion).Where("package_id = ? AND version = ?", 0, "")
-	
+
 	log.Println("Prepared statements initialized for optimized batch operations")
 }
 
@@ -111,14 +111,14 @@ func (opm *OptimizedPackageManager) BatchUpdatePackages(packages []knowledge.Pac
 	if len(packages) == 0 {
 		return nil
 	}
-	
+
 	start := time.Now()
 	defer func() {
 		opm.updateStats(len(packages), 0, time.Since(start))
 	}()
-	
+
 	log.Printf("Starting optimized batch update of %d packages", len(packages))
-	
+
 	// Use transaction for batch operations
 	err := opm.db.RunInTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
 		// Process packages in smaller chunks to avoid memory pressure
@@ -128,26 +128,26 @@ func (opm *OptimizedPackageManager) BatchUpdatePackages(packages []knowledge.Pac
 			if end > len(packages) {
 				end = len(packages)
 			}
-			
+
 			chunk := packages[i:end]
 			if err := opm.processBatchChunk(ctx, tx, chunk); err != nil {
 				return fmt.Errorf("failed to process batch chunk %d-%d: %w", i, end-1, err)
 			}
 		}
-		
+
 		opm.stats.BatchOperationsCount++
 		return nil
 	})
-	
+
 	if err != nil {
 		opm.stats.TotalErrorCount++
 		return fmt.Errorf("batch update transaction failed: %w", err)
 	}
-	
+
 	processingTime := time.Since(start)
-	log.Printf("Completed optimized batch update of %d packages in %v (%.2f packages/sec)", 
+	log.Printf("Completed optimized batch update of %d packages in %v (%.2f packages/sec)",
 		len(packages), processingTime, float64(len(packages))/processingTime.Seconds())
-	
+
 	return nil
 }
 
@@ -157,12 +157,12 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 	var packagesToUpdate []knowledge.Package
 	var versionsToInsert []knowledge.Version
 	var versionsToUpdate []knowledge.Version
-	
+
 	// Check which packages exist and need updates vs inserts
 	for _, pack := range packages {
 		var existingPackage knowledge.Package
 		err := tx.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(ctx)
-		
+
 		if err != nil {
 			// Package doesn't exist, needs insert
 			packagesToInsert = append(packagesToInsert, pack)
@@ -171,10 +171,10 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 			pack.Id = existingPackage.Id // Preserve existing ID
 			packagesToUpdate = append(packagesToUpdate, pack)
 		}
-		
+
 		opm.stats.PreparedStatementHitCount++
 	}
-	
+
 	// Batch insert new packages
 	if len(packagesToInsert) > 0 {
 		_, err := tx.NewInsert().Model(&packagesToInsert).Exec(ctx)
@@ -183,8 +183,8 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 		}
 		opm.stats.TotalPackagesProcessed += int64(len(packagesToInsert))
 	}
-	
-	// Batch update existing packages  
+
+	// Batch update existing packages
 	if len(packagesToUpdate) > 0 {
 		// Note: Bun doesn't support batch updates natively, so we update individually within the transaction
 		for _, pack := range packagesToUpdate {
@@ -195,7 +195,7 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 		}
 		opm.stats.TotalPackagesProcessed += int64(len(packagesToUpdate))
 	}
-	
+
 	// Process versions for all packages in this chunk
 	for _, pack := range packages {
 		var existingPackage knowledge.Package
@@ -203,17 +203,17 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 		if err != nil {
 			continue // Skip version processing if package lookup fails
 		}
-		
+
 		// Process each version for this package
 		for _, version := range pack.Versions {
 			// Skip preview/prerelease versions
 			if isPreviewVersion(version.Version) {
 				continue
 			}
-			
+
 			version.PackageID = existingPackage.Id
 			found := false
-			
+
 			// Check if version exists
 			for _, existingVersion := range existingPackage.Versions {
 				if existingVersion.Version == version.Version {
@@ -223,13 +223,13 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 					break
 				}
 			}
-			
+
 			if !found {
 				versionsToInsert = append(versionsToInsert, version)
 			}
 		}
 	}
-	
+
 	// Batch insert new versions
 	if len(versionsToInsert) > 0 {
 		_, err := tx.NewInsert().Model(&versionsToInsert).Exec(ctx)
@@ -238,7 +238,7 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 		}
 		opm.stats.TotalVersionsProcessed += int64(len(versionsToInsert))
 	}
-	
+
 	// Batch update existing versions
 	if len(versionsToUpdate) > 0 {
 		for _, version := range versionsToUpdate {
@@ -249,9 +249,9 @@ func (opm *OptimizedPackageManager) processBatchChunk(ctx context.Context, tx bu
 		}
 		opm.stats.TotalVersionsProcessed += int64(len(versionsToUpdate))
 	}
-	
+
 	opm.stats.ConnectionReuseCount++
-	
+
 	return nil
 }
 
@@ -265,7 +265,7 @@ func (opm *OptimizedPackageManager) GetStats() PerformanceStats {
 // PrintPerformanceReport prints a detailed performance report
 func (opm *OptimizedPackageManager) PrintPerformanceReport() {
 	stats := opm.GetStats()
-	
+
 	fmt.Println("=== Optimized Package Manager Performance Report ===")
 	fmt.Printf("Total Packages Processed: %d\n", stats.TotalPackagesProcessed)
 	fmt.Printf("Total Versions Processed: %d\n", stats.TotalVersionsProcessed)
@@ -282,10 +282,10 @@ func (opm *OptimizedPackageManager) PrintPerformanceReport() {
 func (opm *OptimizedPackageManager) updateStats(packagesProcessed, versionsProcessed int, processingTime time.Duration) {
 	opm.mu.Lock()
 	defer opm.mu.Unlock()
-	
+
 	opm.stats.TotalPackagesProcessed += int64(packagesProcessed)
 	opm.stats.TotalVersionsProcessed += int64(versionsProcessed)
-	
+
 	// Update rolling average for batch processing time
 	if opm.stats.BatchOperationsCount > 0 {
 		totalTime := opm.stats.AverageBatchProcessingTime*time.Duration(opm.stats.BatchOperationsCount) + processingTime

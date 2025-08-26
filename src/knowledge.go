@@ -123,6 +123,11 @@ func setupDatabases(confirm bool, daemonMode bool) error {
 
 // Update updates the knowledge database by performing various operations such as updating licenses, vulnerabilities, and importing packages.
 // It returns an error if any of the operations fail.
+// UpdateWithSetup updates the knowledge database by setting up database connections internally
+func UpdateWithSetup() error {
+	return updateDatabases()
+}
+
 func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
 	// Update licenses
 	err := licenses.Update(knowledgeDB)
@@ -179,4 +184,43 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
 	}
 
 	return nil
+}
+
+// updateDatabases handles database setup and calls Update with proper connections
+func updateDatabases() error {
+	host := os.Getenv("PG_DB_HOST")
+	if host == "" {
+		log.Printf("PG_DB_HOST is not set")
+		return fmt.Errorf("PG_DB_HOST is not set")
+	}
+	port := os.Getenv("PG_DB_PORT")
+	if port == "" {
+		log.Printf("PG_DB_PORT is not set")
+		return fmt.Errorf("PG_DB_PORT is not set")
+	}
+	user := os.Getenv("PG_DB_USER")
+	if user == "" {
+		log.Printf("PG_DB_USER is not set")
+		return fmt.Errorf("PG_DB_USER is not set")
+	}
+	password := os.Getenv("PG_DB_PASSWORD")
+	if password == "" {
+		log.Printf("PG_DB_PASSWORD is not set")
+		return fmt.Errorf("PG_DB_PASSWORD is not set")
+	}
+
+	// Connect to knowledge database
+	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second)))
+	knowledgeDB := bun.NewDB(sqldb, pgdialect.New())
+	defer knowledgeDB.Close()
+
+	// Connect to config database
+	dsn_config := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Plugins + "?sslmode=disable"
+	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
+	configDB := bun.NewDB(sqldb_config, pgdialect.New())
+	defer configDB.Close()
+
+	// Call the Update function with database connections
+	return Update(knowledgeDB, configDB)
 }
