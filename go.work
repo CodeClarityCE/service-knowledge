@@ -4,6 +4,7 @@ toolchain go1.24.1
 
 use (
 	../../utilities/amqp-helper
+	../../utilities/boilerplates
 	../../utilities/db-helper
 	../../utilities/node-semver
 	../../utilities/types

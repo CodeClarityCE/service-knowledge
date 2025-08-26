@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/CodeClarityCE/utility-types/boilerplates"
+	"github.com/CodeClarityCE/utility-boilerplates"
 	"github.com/uptrace/bun"
 )
 

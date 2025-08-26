@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/CodeClarityCE/utility-types/boilerplates"
+	"github.com/CodeClarityCE/utility-boilerplates"
 )
 
 // KnowledgeService wraps database connections for the knowledge service
