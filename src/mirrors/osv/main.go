@@ -14,6 +14,7 @@ import (
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
 	"github.com/uptrace/bun"
 )
@@ -133,6 +134,48 @@ func extractCVEId(aliases []string) string {
 	return ""
 }
 
+// mapOSVEcosystem maps OSV ecosystem names to our internal format
+func mapOSVEcosystem(ecosystem string) string {
+	switch strings.ToLower(ecosystem) {
+	case "npm":
+		return "npm"
+	case "packagist":
+		return "packagist"
+	default:
+		return strings.ToLower(ecosystem)
+	}
+}
+
+// extractPackageVulnerabilities extracts package-vulnerability relationships from OSV items.
+// Uses the osvIdToUUID map to set the FK reference to the OSV table.
+func extractPackageVulnerabilities(osvItems []knowledge.OSVItem, osvIdToUUID map[string]uuid.UUID) []knowledge.PackageVulnerability {
+	var pkgVulns []knowledge.PackageVulnerability
+
+	for _, osv := range osvItems {
+		// Look up the UUID for this OSV record
+		osvUUID, ok := osvIdToUUID[osv.OSVId]
+		if !ok {
+			// Skip if we don't have the UUID (shouldn't happen normally)
+			continue
+		}
+
+		for _, affected := range osv.Affected {
+			if affected.Package.Name == "" {
+				continue
+			}
+
+			pkgVuln := knowledge.PackageVulnerability{
+				PackageName:      affected.Package.Name,
+				PackageEcosystem: mapOSVEcosystem(affected.Package.Ecosystem),
+				OsvId:            &osvUUID,
+			}
+			pkgVulns = append(pkgVulns, pkgVuln)
+		}
+	}
+
+	return pkgVulns
+}
+
 // processEcosystem downloads and processes vulnerabilities for a single ecosystem
 func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	resp, err := http.Get(url)
@@ -178,8 +221,8 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 
 		// Process batch when it reaches the desired size
 		if len(osvBatch) >= batchSize {
-			if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
-				log.Printf("Error in batch update for ecosystem %s: %v", ecosystem, err)
+			if err := processBatch(db, osvBatch, ecosystem); err != nil {
+				log.Printf("Error processing batch for ecosystem %s: %v", ecosystem, err)
 			}
 			osvBatch = osvBatch[:0] // Reset slice but keep capacity
 		}
@@ -187,8 +230,37 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 
 	// Process remaining items in the batch
 	if len(osvBatch) > 0 {
-		if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
-			log.Printf("Error in final batch update for ecosystem %s: %v", ecosystem, err)
+		if err := processBatch(db, osvBatch, ecosystem); err != nil {
+			log.Printf("Error processing final batch for ecosystem %s: %v", ecosystem, err)
+		}
+	}
+
+	return nil
+}
+
+// processBatch inserts OSV records and creates package-vulnerability links
+func processBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) error {
+	// Step 1: Insert OSV records
+	if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
+		return fmt.Errorf("batch update failed: %w", err)
+	}
+
+	// Step 2: Get UUIDs for the inserted OSV records
+	osvIds := make([]string, len(osvBatch))
+	for i, osv := range osvBatch {
+		osvIds[i] = osv.OSVId
+	}
+
+	osvIdToUUID, err := pgsql.GetOsvUUIDsByOsvIds(db, osvIds)
+	if err != nil {
+		return fmt.Errorf("failed to get OSV UUIDs: %w", err)
+	}
+
+	// Step 3: Extract and insert package-vulnerability relationships with FK
+	pkgVulns := extractPackageVulnerabilities(osvBatch, osvIdToUUID)
+	if len(pkgVulns) > 0 {
+		if err := pgsql.BatchInsertOsvPackageVulnerabilities(db, pkgVulns); err != nil {
+			log.Printf("Error inserting package vulnerabilities for ecosystem %s: %v", ecosystem, err)
 		}
 	}
 

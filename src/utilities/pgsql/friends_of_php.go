@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
@@ -111,4 +112,36 @@ func GetAllFriendsOfPHP(db *bun.DB, limit, offset int) ([]knowledge.FriendsOfPHP
 	}
 
 	return advisories, nil
+}
+
+// GetFriendsOfPhpUUIDsByAdvisoryIds retrieves the internal UUIDs for a list of FriendsOfPHP advisory IDs.
+// Returns a map from advisory_id (string) to internal UUID.
+func GetFriendsOfPhpUUIDsByAdvisoryIds(db *bun.DB, advisoryIds []string) (map[string]uuid.UUID, error) {
+	if len(advisoryIds) == 0 {
+		return make(map[string]uuid.UUID), nil
+	}
+
+	ctx := context.Background()
+
+	var results []struct {
+		Id         uuid.UUID `bun:"id"`
+		AdvisoryId string    `bun:"advisory_id"`
+	}
+
+	err := db.NewSelect().
+		TableExpr("friends_of_php").
+		Column("id", "advisory_id").
+		Where("advisory_id IN (?)", bun.In(advisoryIds)).
+		Scan(ctx, &results)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve FriendsOfPHP UUIDs: %w", err)
+	}
+
+	result := make(map[string]uuid.UUID, len(results))
+	for _, r := range results {
+		result[r.AdvisoryId] = r.Id
+	}
+
+	return result, nil
 }

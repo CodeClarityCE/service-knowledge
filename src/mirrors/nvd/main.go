@@ -14,6 +14,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
 	"github.com/uptrace/bun"
 )
@@ -152,9 +153,30 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 			vulns, err := downloadBatch(i, element_page, urlTemplate, since, now_string, apiKey, rateLimiter)
 			if err != nil {
 				log.Println(err)
+				return
 			}
 
+			// Step 1: Insert NVD records
 			pgsql.UpdateNvd(db, vulns)
+
+			// Step 2: Get UUIDs for inserted NVD records
+			nvdIds := make([]string, len(vulns))
+			for j, v := range vulns {
+				nvdIds[j] = v.NVDId
+			}
+			nvdIdToUUID, err := pgsql.GetNvdUUIDsByNvdIds(db, nvdIds)
+			if err != nil {
+				log.Printf("Error getting NVD UUIDs: %v", err)
+				return
+			}
+
+			// Step 3: Extract and insert package-vulnerability relationships with FK
+			pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
+			if len(pkgVulns) > 0 {
+				if err := pgsql.BatchInsertNvdPackageVulnerabilities(db, pkgVulns); err != nil {
+					log.Printf("Error inserting package vulnerabilities from NVD: %v", err)
+				}
+			}
 		}(&wg, i)
 	}
 
@@ -210,6 +232,44 @@ func fetchNVDStats(urlTemplate string, element_page int, since, now_string, apiK
 	}
 
 	return nil
+}
+
+// extractPackageVulnerabilitiesFromNVD extracts package-vulnerability relationships from NVD items.
+// Uses the nvdIdToUUID map to set the FK reference to the NVD table.
+// Note: NVD uses CPE which doesn't map directly to npm/packagist packages.
+func extractPackageVulnerabilitiesFromNVD(nvdItems []knowledge.NVDItem, nvdIdToUUID map[string]uuid.UUID) []knowledge.PackageVulnerability {
+	var pkgVulns []knowledge.PackageVulnerability
+	seen := make(map[string]bool) // Deduplicate within batch
+
+	for _, nvd := range nvdItems {
+		// Look up the UUID for this NVD record
+		nvdUUID, ok := nvdIdToUUID[nvd.NVDId]
+		if !ok {
+			continue
+		}
+
+		for _, source := range nvd.AffectedFlattened {
+			if source.CriteriaDict.Product == "" || source.CriteriaDict.Product == "*" {
+				continue
+			}
+
+			// Create a unique key for deduplication
+			key := fmt.Sprintf("%s:%s", source.CriteriaDict.Product, nvd.NVDId)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+
+			pkgVuln := knowledge.PackageVulnerability{
+				PackageName:      source.CriteriaDict.Product,
+				PackageEcosystem: "nvd", // NVD uses CPE, doesn't map directly to npm/packagist
+				NvdId:            &nvdUUID,
+			}
+			pkgVulns = append(pkgVulns, pkgVuln)
+		}
+	}
+
+	return pkgVulns
 }
 
 func downloadBatch(i, element_page int, urlTemplate, since, now_string, apiKey string, rateLimiter chan struct{}) ([]knowledge.NVDItem, error) {

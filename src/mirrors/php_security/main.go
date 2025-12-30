@@ -12,6 +12,7 @@ import (
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
@@ -40,6 +41,12 @@ type PackagistAdvisory struct {
 type PackagistAdvisorySource struct {
 	Name     string `json:"name"`
 	RemoteID string `json:"remoteId"`
+}
+
+// advisoryInfo holds advisory ID and package name for creating package_vulnerability links
+type advisoryInfo struct {
+	advisoryId  string
+	packageName string
 }
 
 // Update updates the PHP security advisories from FriendsOfPHP
@@ -135,14 +142,21 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 		return fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	// Process advisories for all packages in the batch
+	// Step 1: Insert advisories and collect advisory IDs with their package names
+	var advisoryInfos []advisoryInfo
 	totalAdvisories := 0
+
 	for packageName, advisories := range response.Advisories {
 		for _, advisory := range advisories {
 			dbAdvisory := convertPackagistToDBModel(advisory)
 			if err := pgsql.UpdateFriendsOfPHP(db, dbAdvisory); err != nil {
 				log.Printf("Error inserting advisory %s: %v", advisory.AdvisoryID, err)
+				continue
 			}
+			advisoryInfos = append(advisoryInfos, advisoryInfo{
+				advisoryId:  advisory.AdvisoryID,
+				packageName: packageName,
+			})
 		}
 		if len(advisories) > 0 {
 			log.Printf("  - %s: %d advisories", packageName, len(advisories))
@@ -154,7 +168,58 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 		log.Printf("Total advisories in batch: %d", totalAdvisories)
 	}
 
+	// Step 2: Get UUIDs for inserted advisories
+	if len(advisoryInfos) > 0 {
+		advisoryIds := make([]string, len(advisoryInfos))
+		for i, info := range advisoryInfos {
+			advisoryIds[i] = info.advisoryId
+		}
+
+		advisoryIdToUUID, err := pgsql.GetFriendsOfPhpUUIDsByAdvisoryIds(db, advisoryIds)
+		if err != nil {
+			log.Printf("Error getting FriendsOfPHP UUIDs: %v", err)
+			return nil // Don't fail the whole batch
+		}
+
+		// Step 3: Create package_vulnerability records
+		pkgVulns := extractPackageVulnerabilitiesFromFriendsOfPhp(advisoryInfos, advisoryIdToUUID)
+		if len(pkgVulns) > 0 {
+			if err := pgsql.BatchInsertFriendsOfPhpPackageVulnerabilities(db, pkgVulns); err != nil {
+				log.Printf("Error inserting package vulnerabilities from FriendsOfPHP: %v", err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// extractPackageVulnerabilitiesFromFriendsOfPhp creates package-vulnerability links from FriendsOfPHP advisories.
+func extractPackageVulnerabilitiesFromFriendsOfPhp(advisoryInfos []advisoryInfo, advisoryIdToUUID map[string]uuid.UUID) []knowledge.PackageVulnerability {
+	var pkgVulns []knowledge.PackageVulnerability
+	seen := make(map[string]bool)
+
+	for _, info := range advisoryInfos {
+		fopUUID, ok := advisoryIdToUUID[info.advisoryId]
+		if !ok {
+			continue
+		}
+
+		// Create unique key for deduplication
+		key := fmt.Sprintf("%s:packagist:%s", info.packageName, info.advisoryId)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		pkgVuln := knowledge.PackageVulnerability{
+			PackageName:      info.packageName,
+			PackageEcosystem: "packagist",
+			FriendsOfPhpId:   &fopUUID,
+		}
+		pkgVulns = append(pkgVulns, pkgVuln)
+	}
+
+	return pkgVulns
 }
 
 // convertPackagistToDBModel converts a Packagist advisory to database model

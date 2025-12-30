@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
@@ -78,4 +79,36 @@ func GetOsvByID(db *bun.DB, osvId string) (*knowledge.OSVItem, error) {
 	}
 
 	return osv, nil
+}
+
+// GetOsvUUIDsByOsvIds retrieves the internal UUIDs for a list of OSV IDs.
+// Returns a map from osv_id (string like "GHSA-xxx") to internal UUID.
+func GetOsvUUIDsByOsvIds(db *bun.DB, osvIds []string) (map[string]uuid.UUID, error) {
+	if len(osvIds) == 0 {
+		return make(map[string]uuid.UUID), nil
+	}
+
+	ctx := context.Background()
+
+	var results []struct {
+		Id    uuid.UUID `bun:"id"`
+		OsvId string    `bun:"osv_id"`
+	}
+
+	err := db.NewSelect().
+		TableExpr("osv").
+		Column("id", "osv_id").
+		Where("osv_id IN (?)", bun.In(osvIds)).
+		Scan(ctx, &results)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve OSV UUIDs: %w", err)
+	}
+
+	result := make(map[string]uuid.UUID, len(results))
+	for _, r := range results {
+		result[r.OsvId] = r.Id
+	}
+
+	return result, nil
 }

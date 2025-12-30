@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
@@ -66,4 +67,36 @@ func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
 	}
 
 	return nil
+}
+
+// GetNvdUUIDsByNvdIds retrieves the internal UUIDs for a list of NVD IDs.
+// Returns a map from nvd_id (string like "CVE-xxx") to internal UUID.
+func GetNvdUUIDsByNvdIds(db *bun.DB, nvdIds []string) (map[string]uuid.UUID, error) {
+	if len(nvdIds) == 0 {
+		return make(map[string]uuid.UUID), nil
+	}
+
+	ctx := context.Background()
+
+	var results []struct {
+		Id    uuid.UUID `bun:"id"`
+		NvdId string    `bun:"nvd_id"`
+	}
+
+	err := db.NewSelect().
+		TableExpr("nvd").
+		Column("id", "nvd_id").
+		Where("nvd_id IN (?)", bun.In(nvdIds)).
+		Scan(ctx, &results)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve NVD UUIDs: %w", err)
+	}
+
+	result := make(map[string]uuid.UUID, len(results))
+	for _, r := range results {
+		result[r.NvdId] = r.Id
+	}
+
+	return result, nil
 }
