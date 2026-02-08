@@ -13,6 +13,7 @@ import (
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
 	"github.com/uptrace/bun"
 )
@@ -204,143 +205,186 @@ func UpdatePackagesBatch(db *bun.DB, packageNames []string) error {
 		return nil
 	}
 
-	// Removed verbose per-batch logging to reduce noise
+	ctx := context.Background()
 
-	// Download all packages concurrently
+	// Phase 1: Batch cache check -- single query for all packages
+	var cachedPackages []knowledge.Package
+	err := db.NewSelect().
+		Model(&cachedPackages).
+		Column("name", "time").
+		Where("name IN (?) AND language = ?", bun.In(packageNames), "php").
+		Scan(ctx)
+	if err != nil {
+		log.Printf("Cache check query failed, downloading all: %v", err)
+	}
+
+	recentCutoff := time.Now().Add(-4 * time.Hour)
+	skipSet := make(map[string]bool, len(cachedPackages))
+	for _, p := range cachedPackages {
+		if p.Time.After(recentCutoff) {
+			skipSet[p.Name] = true
+		}
+	}
+
+	var toDownload []string
+	for _, name := range packageNames {
+		if !skipSet[name] {
+			toDownload = append(toDownload, name)
+		}
+	}
+
+	if len(toDownload) == 0 {
+		return nil
+	}
+
+	// Phase 2: Concurrent HTTP downloads
 	type packageResult struct {
 		name string
 		pack knowledge.Package
 		err  error
 	}
 
-	results := make(chan packageResult, len(packageNames))
+	results := make(chan packageResult, len(toDownload))
 	var downloadWg sync.WaitGroup
-	sem := make(chan struct{}, 10) // Limit concurrent downloads
+	sem := make(chan struct{}, 10)
 
-	for _, pkgName := range packageNames {
+	for _, pkgName := range toDownload {
 		downloadWg.Add(1)
 		go func(name string) {
 			defer downloadWg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Check if package was recently updated (cache check)
-			var existingPackage knowledge.Package
-			err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", name, "php").Scan(context.Background())
-			if err == nil {
-				// Check if the package was updated in the last 4 hours
-				if existingPackage.Time.After(time.Now().Add(-4 * time.Hour)) {
-					results <- packageResult{name: name, pack: knowledge.Package{}, err: nil} // Skip
-					return
-				}
-			}
-
-			// Download package from Packagist
 			result, err := downloadPackagist(name)
 			if err != nil {
 				results <- packageResult{name: name, err: err}
 				return
 			}
 
-			// Convert to internal package format
 			pack := convertPackagistToKnowledge(result)
 			results <- packageResult{name: name, pack: pack, err: nil}
 		}(pkgName)
 	}
 
-	// Wait for all downloads to complete
 	go func() {
 		downloadWg.Wait()
 		close(results)
 	}()
 
-	// Collect all packages for batch database operations
 	var packagesToUpdate []knowledge.Package
-	var versionsToInsert []knowledge.Version
-	var versionsToUpdate []knowledge.Version
-
 	for result := range results {
 		if result.err != nil {
 			log.Printf("Error downloading PHP package %s: %v", result.name, result.err)
 			continue
 		}
-
-		if result.pack.Name == "" {
-			continue // Skipped due to recent update
+		if result.pack.Name != "" {
+			packagesToUpdate = append(packagesToUpdate, result.pack)
 		}
-
-		packagesToUpdate = append(packagesToUpdate, result.pack)
 	}
 
 	if len(packagesToUpdate) == 0 {
-		return nil // Nothing to update
+		return nil
 	}
 
-	// Use database transaction for batch operations
-	err := db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
-		// Batch upsert packages using prepared statements
+	// Phase 3-5: Database transaction with batch upserts
+	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Phase 3: Batch upsert all packages using ON CONFLICT
+		for i := range packagesToUpdate {
+			_, err := tx.NewInsert().
+				Model(&packagesToUpdate[i]).
+				On("CONFLICT (name, language) DO UPDATE").
+				Set("description = EXCLUDED.description").
+				Set("homepage = EXCLUDED.homepage").
+				Set("latest_version = EXCLUDED.latest_version").
+				Set("\"time\" = EXCLUDED.\"time\"").
+				Set("keywords = EXCLUDED.keywords").
+				Set("source = EXCLUDED.source").
+				Set("license = EXCLUDED.license").
+				Set("licenses = EXCLUDED.licenses").
+				Set("extra = EXCLUDED.extra").
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to upsert package %s: %w", packagesToUpdate[i].Name, err)
+			}
+		}
+
+		// Batch fetch all package IDs
+		names := make([]string, len(packagesToUpdate))
+		for i, p := range packagesToUpdate {
+			names[i] = p.Name
+		}
+
+		var pkgsWithIds []knowledge.Package
+		err := tx.NewSelect().
+			Model(&pkgsWithIds).
+			Column("id", "name").
+			Where("name IN (?) AND language = ?", bun.In(names), "php").
+			Scan(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to fetch package IDs: %w", err)
+		}
+
+		pkgIdMap := make(map[string]uuid.UUID, len(pkgsWithIds))
+		packageIDs := make([]uuid.UUID, 0, len(pkgsWithIds))
+		for _, p := range pkgsWithIds {
+			pkgIdMap[p.Name] = p.Id
+			packageIDs = append(packageIDs, p.Id)
+		}
+
+		// Phase 4: Batch load all existing versions
+		var existingVersions []knowledge.Version
+		if len(packageIDs) > 0 {
+			err = tx.NewSelect().
+				Model(&existingVersions).
+				Where("package_id IN (?)", bun.In(packageIDs)).
+				Scan(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to batch load versions: %w", err)
+			}
+		}
+
+		existingVersionSet := make(map[uuid.UUID]map[string]bool)
+		for _, v := range existingVersions {
+			if existingVersionSet[v.PackageID] == nil {
+				existingVersionSet[v.PackageID] = make(map[string]bool)
+			}
+			existingVersionSet[v.PackageID][v.Version] = true
+		}
+
+		// Collect all versions for batch upsert
+		var allVersions []knowledge.Version
 		for _, pack := range packagesToUpdate {
-			var existingPackage knowledge.Package
-			err := tx.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(ctx)
-			if err != nil {
-				// Insert new package
-				_, err := tx.NewInsert().Model(&pack).Exec(ctx)
-				if err != nil {
-					return fmt.Errorf("failed to insert package %s: %w", pack.Name, err)
-				}
-			} else {
-				// Update existing package
-				pack.Id = existingPackage.Id // Preserve ID for updates
-				_, err = tx.NewUpdate().Model(&pack).Where("id = ?", existingPackage.Id).Exec(ctx)
-				if err != nil {
-					return fmt.Errorf("failed to update package %s: %w", pack.Name, err)
-				}
+			pkgId, ok := pkgIdMap[pack.Name]
+			if !ok {
+				continue
 			}
 
-			// Get updated package with ID for version processing
-			err = tx.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to fetch package %s for version processing: %w", pack.Name, err)
-			}
-
-			// Batch process versions
 			for _, version := range pack.Versions {
-				// Skip preview/prerelease versions
 				if isPreviewVersion(version.Version) {
 					continue
 				}
-
-				version.PackageID = existingPackage.Id
-				found := false
-
-				// Check if the version already exists
-				for _, existingVersion := range existingPackage.Versions {
-					if existingVersion.Version == version.Version {
-						found = true
-						versionsToUpdate = append(versionsToUpdate, version)
-						break
-					}
-				}
-
-				if !found {
-					versionsToInsert = append(versionsToInsert, version)
-				}
+				version.PackageID = pkgId
+				allVersions = append(allVersions, version)
 			}
 		}
 
-		// Batch insert new versions
-		if len(versionsToInsert) > 0 {
-			_, err := tx.NewInsert().Model(&versionsToInsert).Exec(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to batch insert versions: %w", err)
-			}
-		}
-
-		// Batch update existing versions
-		for _, version := range versionsToUpdate {
-			_, err := tx.NewUpdate().Model(&version).Where("package_id = ? and version = ?", version.PackageID, version.Version).Exec(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to update version %s for package ID %d: %w", version.Version, version.PackageID, err)
+		// Phase 5: Batch upsert all versions using ON CONFLICT
+		if len(allVersions) > 0 {
+			const chunkSize = 500
+			for i := 0; i < len(allVersions); i += chunkSize {
+				end := min(i+chunkSize, len(allVersions))
+				chunk := allVersions[i:end]
+				_, err := tx.NewInsert().
+					Model(&chunk).
+					On("CONFLICT (package_id, version) DO UPDATE").
+					Set("dependencies = EXCLUDED.dependencies").
+					Set("dev_dependencies = EXCLUDED.dev_dependencies").
+					Set("extra = EXCLUDED.extra").
+					Set("updated_at = NOW()").
+					Exec(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to batch upsert versions: %w", err)
+				}
 			}
 		}
 
@@ -350,8 +394,6 @@ func UpdatePackagesBatch(db *bun.DB, packageNames []string) error {
 	if err != nil {
 		return fmt.Errorf("batch database operation failed: %w", err)
 	}
-
-	// Reduced to single line summary for cleaner logs
 
 	return nil
 }

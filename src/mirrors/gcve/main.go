@@ -29,6 +29,12 @@ const (
 	batchSize       = 100
 )
 
+// httpClient is a shared HTTP client with timeouts for all GCVE requests.
+// Bulk downloads are ~4.7GB so the timeout must be generous.
+var httpClient = &http.Client{
+	Timeout: 30 * time.Minute,
+}
+
 // Update synchronizes GCVE/CVE data from vulnerability-lookup.
 // Uses bulk dump for initial load, incremental API for subsequent updates.
 func Update(db *bun.DB, db_config *bun.DB) error {
@@ -105,7 +111,7 @@ func setLastGCVESync(db_config *bun.DB, conf config.Config) error {
 func bulkImport(db *bun.DB) error {
 	log.Println("Downloading cvelistv5 bulk dump...")
 
-	resp, err := http.Get(bulkDumpURL)
+	resp, err := httpClient.Get(bulkDumpURL)
 	if err != nil {
 		return fmt.Errorf("failed to download bulk dump: %w", err)
 	}
@@ -122,7 +128,7 @@ func bulkImport(db *bun.DB) error {
 func importVulnrichment(db *bun.DB) error {
 	log.Println("Downloading vulnrichment dump...")
 
-	resp, err := http.Get(vulnrichmentURL)
+	resp, err := httpClient.Get(vulnrichmentURL)
 	if err != nil {
 		return fmt.Errorf("failed to download vulnrichment dump: %w", err)
 	}
@@ -142,6 +148,8 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 
 	var batch []knowledge.GCVEItem
 	totalProcessed := 0
+	parseErrors := 0
+	rejected := 0
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -151,9 +159,11 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 
 		item, err := parseCVERecord(line)
 		if err != nil {
+			parseErrors++
 			continue
 		}
 		if item == nil {
+			rejected++
 			continue // Skip REJECTED records
 		}
 
@@ -180,7 +190,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 		totalProcessed += len(batch)
 	}
 
-	log.Printf("GCVE: total %d CVE records processed", totalProcessed)
+	log.Printf("GCVE: total %d CVE records processed, %d parse errors, %d rejected", totalProcessed, parseErrors, rejected)
 	return scanner.Err()
 }
 
@@ -281,9 +291,6 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 		}
 	}
 
-	// Build affected_flattened for JSONB containment queries
-	item.AffectedFlattened = buildAffectedFlattened(item.Affected)
-
 	// Parse ADP enrichments
 	for _, rawAdp := range raw.Containers.ADP {
 		var adp ADPContainer
@@ -307,18 +314,17 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 			}
 
 			item.ADPEnrichments = append(item.ADPEnrichments, gcveAdp)
-
-			// Also add ADP affected products to the flattened index
-			for _, aff := range gcveAdp.Affected {
-				if aff.Product != "" {
-					item.AffectedFlattened = append(item.AffectedFlattened, knowledge.GCVEProduct{
-						Vendor:  aff.Vendor,
-						Product: aff.Product,
-					})
-				}
-			}
 		}
 	}
+
+	// Build affected_flattened from both CNA and ADP affected products,
+	// deduplicated by vendor+product pair.
+	var allAffected []knowledge.GCVEAffected
+	allAffected = append(allAffected, item.Affected...)
+	for _, adp := range item.ADPEnrichments {
+		allAffected = append(allAffected, adp.Affected...)
+	}
+	item.AffectedFlattened = buildAffectedFlattened(allAffected)
 
 	// Ensure empty slices instead of nil for JSONB storage
 	if item.Descriptions == nil {
@@ -501,7 +507,7 @@ func incrementalUpdate(db *bun.DB, since time.Time) error {
 		req.Header.Set("X-API-KEY", apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
 	}

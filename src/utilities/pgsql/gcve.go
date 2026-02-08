@@ -10,11 +10,33 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// deduplicateGcveItems removes duplicate GCVE IDs within a batch, keeping the last
+// occurrence. This prevents PostgreSQL's "ON CONFLICT DO UPDATE command cannot affect
+// row a second time" error when the same CVE appears multiple times in one batch
+// (e.g. from the /api/last incremental endpoint).
+func deduplicateGcveItems(items []knowledge.GCVEItem) []knowledge.GCVEItem {
+	seen := make(map[string]int, len(items))
+	result := make([]knowledge.GCVEItem, 0, len(items))
+
+	for _, item := range items {
+		if idx, exists := seen[item.GCVEId]; exists {
+			result[idx] = item // overwrite with latest
+		} else {
+			seen[item.GCVEId] = len(result)
+			result = append(result, item)
+		}
+	}
+
+	return result
+}
+
 // BatchUpdateGcve performs efficient batch upsert operations for multiple GCVE records.
 func BatchUpdateGcve(db *bun.DB, items []knowledge.GCVEItem) error {
 	if len(items) == 0 {
 		return nil
 	}
+
+	items = deduplicateGcveItems(items)
 
 	ctx := context.Background()
 

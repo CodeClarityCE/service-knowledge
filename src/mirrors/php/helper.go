@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+// Shared HTTP client with connection pooling and timeout
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // PackagistPackage represents a package from Packagist API
 type PackagistPackage struct {
 	Package PackagistPackageDetails `json:"package"`
@@ -95,47 +105,40 @@ type PackagistSearchItem struct {
 	Favers      int    `json:"favers"`
 }
 
-// downloadPackagist downloads a package from Packagist.org
 func downloadPackagist(packageName string) (*PackagistPackage, error) {
-	// Clean package name
+	return downloadPackagistWithRetry(packageName, 0)
+}
+
+func downloadPackagistWithRetry(packageName string, retryCount int) (*PackagistPackage, error) {
 	packageName = strings.TrimSpace(packageName)
 
-	// Build URL for Packagist API v2
 	apiUrl := fmt.Sprintf("https://repo.packagist.org/p2/%s.json", url.QueryEscape(packageName))
 
-	// Create HTTP request
 	req, err := http.NewRequest("GET", apiUrl, nil)
 	if err != nil {
-		log.Printf("Error creating request for package %s: %v", packageName, err)
 		return nil, err
 	}
-
-	// Set User-Agent header (required by Packagist)
 	req.Header.Set("User-Agent", "CodeClarity/1.0")
 
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Execute request
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Error fetching package %s: %v", packageName, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// Handle response status
 	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
+		switch resp.StatusCode {
+		case 404:
 			return nil, fmt.Errorf("package not found: %s", packageName)
-		} else if resp.StatusCode == 429 {
-			// Rate limited, wait and retry
-			time.Sleep(60 * time.Second)
-			log.Printf("Rate limited for package %s, retrying after 60 seconds", packageName)
-			return downloadPackagist(packageName)
-		} else {
+		case 429:
+			if retryCount >= 3 {
+				return nil, fmt.Errorf("rate limited after %d retries: %s", retryCount, packageName)
+			}
+			backoff := time.Duration(30*(retryCount+1)) * time.Second
+			log.Printf("Rate limited for %s, retrying in %v (attempt %d/3)", packageName, backoff, retryCount+1)
+			time.Sleep(backoff)
+			return downloadPackagistWithRetry(packageName, retryCount+1)
+		default:
 			return nil, fmt.Errorf("failed to fetch package %s: HTTP %d", packageName, resp.StatusCode)
 		}
 	}
@@ -265,16 +268,9 @@ func searchPackagist(query string, page int) (*PackagistSearchResult, error) {
 		return nil, err
 	}
 
-	// Set User-Agent header
 	req.Header.Set("User-Agent", "CodeClarity/1.0")
 
-	// Create HTTP client
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Execute request
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
