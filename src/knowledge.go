@@ -10,6 +10,7 @@ import (
 
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/cwe"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/js"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/licenses"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
@@ -157,6 +158,13 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
 	}
 
 	err = nvd.Update(knowledgeDB, configDB)
+	if err != nil {
+		log.Printf("%v", err)
+		// return err
+	}
+
+	// Update GCVE/vulnerability-lookup (primary vulnerability source)
+	err = gcve.Update(knowledgeDB, configDB)
 	if err != nil {
 		log.Printf("%v", err)
 		// return err
