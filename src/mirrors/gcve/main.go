@@ -239,6 +239,15 @@ type ADPContainer struct {
 	Metrics  []json.RawMessage `json:"metrics,omitempty"`
 }
 
+// cveToGCVEId converts a CVE ID (e.g., "CVE-2024-1234") to GCVE format
+// (e.g., "GCVE-0-2024-1234") using GNA ID 0 for legacy CVE identifiers.
+func cveToGCVEId(cveId string) string {
+	if strings.HasPrefix(cveId, "CVE-") {
+		return "GCVE-0-" + cveId[4:]
+	}
+	return cveId
+}
+
 // parseCVERecord transforms the raw CVE Record v5.x JSON into a GCVEItem.
 func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 	var raw CVERecordRaw
@@ -252,7 +261,7 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 	}
 
 	item := &knowledge.GCVEItem{
-		GCVEId:        raw.CveMetadata.CveId,
+		GCVEId:        cveToGCVEId(raw.CveMetadata.CveId),
 		CVEId:         raw.CveMetadata.CveId,
 		DataVersion:   raw.DataVersion,
 		State:         raw.CveMetadata.State,
