@@ -13,6 +13,7 @@ import (
 	"time"
 
 	amqp_helper "github.com/CodeClarityCE/utility-amqp-helper"
+	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -380,8 +381,8 @@ func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, exis
 		return fmt.Errorf("database connection parameters not set")
 	}
 
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/codeclarity?sslmode=disable", user, password, host, port)
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(30*time.Second)))
+	dsn := dbhelper.BuildDSN(user, password, host, port, "codeclarity")
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(30*time.Second), dbhelper.BuildPgdriverTLSOption()))
 	codeClarityDB := bun.NewDB(sqldb, pgdialect.New())
 	defer codeClarityDB.Close()
 

@@ -68,13 +68,15 @@ func setupDatabases(confirm bool, daemonMode bool) error {
 		return fmt.Errorf("PG_DB_PASSWORD is not set")
 	}
 
-	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second)))
+	tlsOpt := dbhelper.BuildPgdriverTLSOption()
+
+	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second), tlsOpt))
 	db := bun.NewDB(sqldb, pgdialect.New())
 	defer db.Close()
 
-	dsn_config := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Config + "?sslmode=disable"
-	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
+	dsn_config := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Config)
+	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second), tlsOpt))
 	db_config := bun.NewDB(sqldb_config, pgdialect.New())
 	defer db_config.Close()
 
@@ -217,15 +219,17 @@ func updateDatabases() error {
 		return fmt.Errorf("PG_DB_PASSWORD is not set")
 	}
 
+	tlsOpt := dbhelper.BuildPgdriverTLSOption()
+
 	// Connect to knowledge database
-	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second)))
+	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second), tlsOpt))
 	knowledgeDB := bun.NewDB(sqldb, pgdialect.New())
 	defer knowledgeDB.Close()
 
 	// Connect to config database
-	dsn_config := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Plugins + "?sslmode=disable"
-	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
+	dsn_config := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Plugins)
+	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second), tlsOpt))
 	configDB := bun.NewDB(sqldb_config, pgdialect.New())
 	defer configDB.Close()
 
