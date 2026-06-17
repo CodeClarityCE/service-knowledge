@@ -305,54 +305,74 @@ func (opm *OptimizedPackageManager) updateStats(packagesProcessed, versionsProce
 // Returns an error if any operation fails.
 func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 
-	var existingPackage knowledge.Package
-	err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
-	if err != nil {
-		_, err := db.NewInsert().Model(&pack).Exec(context.Background())
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err = db.NewUpdate().Model(&pack).Where("id = ?", existingPackage.Id).Exec(context.Background())
-		if err != nil {
-			return err
-		}
-	}
+	ctx := context.Background()
 
-	err = db.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
+	// Idempotent, concurrency-safe upsert path mirroring the batch importer
+	// (mirrors/js/main.go). Runs in a single transaction so concurrent
+	// follower replicas touching the same package cannot race into duplicate
+	// inserts or lost updates.
+	var existingPackage knowledge.Package
+	var newVersions []knowledge.Version
+
+	err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Upsert the package on its (name, language) unique key.
+		_, err := tx.NewInsert().
+			Model(&pack).
+			On("CONFLICT (name, language) DO UPDATE").
+			Set("description = EXCLUDED.description").
+			Set("homepage = EXCLUDED.homepage").
+			Set("latest_version = EXCLUDED.latest_version").
+			Set("\"time\" = EXCLUDED.\"time\"").
+			Set("keywords = EXCLUDED.keywords").
+			Set("source = EXCLUDED.source").
+			Set("license = EXCLUDED.license").
+			Set("licenses = EXCLUDED.licenses").
+			Set("extra = EXCLUDED.extra").
+			Exec(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Reload the package (with its current versions) to resolve its id and
+		// to determine which incoming versions are genuinely new.
+		err = tx.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(ctx)
+		if err != nil {
+			return err
+		}
+
+		existingVersionSet := make(map[string]bool, len(existingPackage.Versions))
+		for _, v := range existingPackage.Versions {
+			existingVersionSet[v.Version] = true
+		}
+
+		// Upsert versions (stable only) on their (package_id, version) unique key.
+		for _, version := range pack.Versions {
+			if isPreviewVersion(version.Version) {
+				continue
+			}
+
+			version.PackageID = existingPackage.Id
+			if !existingVersionSet[version.Version] {
+				newVersions = append(newVersions, version)
+			}
+
+			_, err := tx.NewInsert().
+				Model(&version).
+				On("CONFLICT (package_id, version) DO UPDATE").
+				Set("dependencies = EXCLUDED.dependencies").
+				Set("dev_dependencies = EXCLUDED.dev_dependencies").
+				Set("extra = EXCLUDED.extra").
+				Set("updated_at = NOW()").
+				Exec(ctx)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
 		return err
-	}
-
-	// Insert new versions (only stable versions)
-	var newVersions []knowledge.Version
-	for _, version := range pack.Versions {
-		// Skip preview/prerelease versions
-		if isPreviewVersion(version.Version) {
-			continue
-		}
-
-		version.PackageID = existingPackage.Id
-		found := false
-		// Check if the version already exists
-		for _, existingVersion := range existingPackage.Versions {
-			if existingVersion.Version == version.Version {
-				found = true
-				break
-			}
-		}
-		if !found { // If the version doesn't exist, insert it
-			_, err := db.NewInsert().Model(&version).Exec(context.Background())
-			if err != nil {
-				return err
-			}
-			newVersions = append(newVersions, version)
-		} else { // If the version exists, update it
-			_, err := db.NewUpdate().Model(&version).Where("package_id = ? and version = ?", existingPackage.Id, version.Version).Exec(context.Background())
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	// Send notification about new package versions if found
