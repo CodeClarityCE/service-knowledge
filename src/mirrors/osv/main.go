@@ -5,14 +5,17 @@ package osv
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
@@ -22,7 +25,7 @@ import (
 // Update updates the licenses in the OSV (Open Source Vulnerabilities) database for the specified ecosystems.
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
-func Update(db *bun.DB) error {
+func Update(db *bun.DB, db_config *bun.DB) error {
 	ecosystems := []string{
 		// "Alpine",
 		// "Alpine:v3.10",
@@ -83,6 +86,31 @@ func Update(db *bun.DB) error {
 		}
 
 		bar.Add(1)
+	}
+
+	return setLastOSVSync(db_config)
+}
+
+// setLastOSVSync stamps osv_last on the shared config row. The update is
+// column-scoped (not a full-row save like nvd/gcve) so concurrent writers of
+// the other *_last columns are not clobbered.
+func setLastOSVSync(db_config *bun.DB) error {
+	ctx := context.Background()
+	var configs []config.Config
+	err := db_config.NewSelect().Model(&configs).Limit(1).Scan(ctx)
+	if err != nil {
+		log.Println("Can't get config for OSV sync", err)
+		return err
+	}
+	if len(configs) == 0 {
+		return fmt.Errorf("no config found")
+	}
+	conf := configs[0]
+	conf.OsvLast = time.Now()
+	_, err = db_config.NewUpdate().Model(&conf).Column("osv_last").Where("id = ?", conf.Id).Exec(ctx)
+	if err != nil {
+		log.Println("Failed to update OSV sync timestamp:", err)
+		return err
 	}
 	return nil
 }

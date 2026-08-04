@@ -147,7 +147,7 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
 	}
 
 	// Update vulnerabilities
-	err = osv.Update(knowledgeDB)
+	err = osv.Update(knowledgeDB, configDB)
 	if err != nil {
 		log.Printf("%v", err)
 		// return err

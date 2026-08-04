@@ -7,13 +7,13 @@ import (
 )
 
 func TestUpdate(t *testing.T) {
-	db, cleanup := testhelper.SetupKnowledgeTestDB(t)
-	if db == nil {
+	db_knowledge, db_config, cleanup := testhelper.SetupKnowledgeAndConfigTestDB(t)
+	if db_knowledge == nil {
 		return // Test was skipped
 	}
 	defer cleanup()
 
-	err := Update(db)
+	err := Update(db_knowledge, db_config)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
