@@ -22,61 +22,64 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// ImportedEcosystems is the ecosystem scope of the OSV mirror. The as-of
+// importer (src/mirrors/osv_asof) derives its scope from this list too, so the
+// two importers always cover the same ecosystems.
+var ImportedEcosystems = []string{
+	// "Alpine",
+	// "Alpine:v3.10",
+	// "Alpine:v3.11",
+	// "Alpine:v3.12",
+	// "Alpine:v3.13",
+	// "Alpine:v3.14",
+	// "Alpine:v3.15",
+	// "Alpine:v3.16",
+	// "Alpine:v3.17",
+	// "Alpine:v3.2",
+	// "Alpine:v3.3",
+	// "Alpine:v3.4",
+	// "Alpine:v3.5",
+	// "Alpine:v3.6",
+	// "Alpine:v3.7",
+	// "Alpine:v3.8",
+	// "Alpine:v3.9",
+	// "Android",
+	// "Debian",
+	// "Debian:10",
+	// "Debian:11",
+	// "Debian:3.0",
+	// "Debian:3.1",
+	// "Debian:4.0",
+	// "Debian:5.0",
+	// "Debian:6.0",
+	// "Debian:7",
+	// "Debian:8",
+	// "Debian:9",
+	// "GSD",
+	// "GitHub Actions",
+	// "Go",
+	// "Hex",
+	// "Linux",
+	// "Maven",
+	// "NuGet",
+	// "OSS-Fuzz",
+	"Packagist",
+	// "Pub",
+	// "PyPI",
+	// "RubyGems",
+	// "UVI",
+	// "crates.io",
+	"npm",
+}
+
 // Update updates the licenses in the OSV (Open Source Vulnerabilities) database for the specified ecosystems.
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
 func Update(db *bun.DB, db_config *bun.DB) error {
-	ecosystems := []string{
-		// "Alpine",
-		// "Alpine:v3.10",
-		// "Alpine:v3.11",
-		// "Alpine:v3.12",
-		// "Alpine:v3.13",
-		// "Alpine:v3.14",
-		// "Alpine:v3.15",
-		// "Alpine:v3.16",
-		// "Alpine:v3.17",
-		// "Alpine:v3.2",
-		// "Alpine:v3.3",
-		// "Alpine:v3.4",
-		// "Alpine:v3.5",
-		// "Alpine:v3.6",
-		// "Alpine:v3.7",
-		// "Alpine:v3.8",
-		// "Alpine:v3.9",
-		// "Android",
-		// "Debian",
-		// "Debian:10",
-		// "Debian:11",
-		// "Debian:3.0",
-		// "Debian:3.1",
-		// "Debian:4.0",
-		// "Debian:5.0",
-		// "Debian:6.0",
-		// "Debian:7",
-		// "Debian:8",
-		// "Debian:9",
-		// "GSD",
-		// "GitHub Actions",
-		// "Go",
-		// "Hex",
-		// "Linux",
-		// "Maven",
-		// "NuGet",
-		// "OSS-Fuzz",
-		"Packagist",
-		// "Pub",
-		// "PyPI",
-		// "RubyGems",
-		// "UVI",
-		// "crates.io",
-		"npm",
-	}
-
 	log.Println("Start updating OSV vulnerabilities")
-	bar := progressbar.Default(int64(len(ecosystems)))
+	bar := progressbar.Default(int64(len(ImportedEcosystems)))
 
-	for _, ecosystem := range ecosystems {
+	for _, ecosystem := range ImportedEcosystems {
 		log.Printf("Processing ecosystem: %s", ecosystem)
 		url := "https://osv-vulnerabilities.storage.googleapis.com/" + ecosystem + "/all.zip"
 
@@ -88,13 +91,14 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 		bar.Add(1)
 	}
 
-	return setLastOSVSync(db_config)
+	return SetLastOSVSync(db_config, time.Now())
 }
 
-// setLastOSVSync stamps osv_last on the shared config row. The update is
+// SetLastOSVSync stamps osv_last on the shared config row. The update is
 // column-scoped (not a full-row save like nvd/gcve) so concurrent writers of
-// the other *_last columns are not clobbered.
-func setLastOSVSync(db_config *bun.DB) error {
+// the other *_last columns are not clobbered. The as-of importer
+// (src/mirrors/osv_asof) reuses it to stamp the advisory-checkout commit date.
+func SetLastOSVSync(db_config *bun.DB, syncedAt time.Time) error {
 	ctx := context.Background()
 	var configs []config.Config
 	err := db_config.NewSelect().Model(&configs).Limit(1).Scan(ctx)
@@ -106,7 +110,7 @@ func setLastOSVSync(db_config *bun.DB) error {
 		return fmt.Errorf("no config found")
 	}
 	conf := configs[0]
-	conf.OsvLast = time.Now()
+	conf.OsvLast = syncedAt
 	_, err = db_config.NewUpdate().Model(&conf).Column("osv_last").Where("id = ?", conf.Id).Exec(ctx)
 	if err != nil {
 		log.Println("Failed to update OSV sync timestamp:", err)
@@ -124,6 +128,24 @@ func readZipFile(zf *zip.File) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
+}
+
+// ParseAdvisory converts a raw OSV advisory JSON document into a
+// knowledge.OSVItem with the mirror's derived-field semantics: cwes from
+// database_specific.cwe_ids and cve from the first CVE alias; the vlai_*
+// fields keep their zero values. It is the single transform shared by the
+// live GCS import below and the as-of importer (src/mirrors/osv_asof).
+func ParseAdvisory(data []byte) (knowledge.OSVItem, error) {
+	var result knowledge.OSVItem
+	if err := json.Unmarshal(data, &result); err != nil {
+		return knowledge.OSVItem{}, err
+	}
+
+	// Extract CWE IDs and CVE ID efficiently
+	result.Cwes = extractCWEIds(result.DatabaseSpecific)
+	result.Cve = extractCVEId(result.Aliases)
+
+	return result, nil
 }
 
 // extractCWEIds efficiently extracts CWE IDs from the database specific field
@@ -234,22 +256,18 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 			continue
 		}
 
-		var result knowledge.OSVItem
-		if err := json.Unmarshal(unzippedFileBytes, &result); err != nil {
+		result, err := ParseAdvisory(unzippedFileBytes)
+		if err != nil {
 			log.Printf("Error unmarshaling JSON from %s: %v", zipFile.Name, err)
 			continue
 		}
-
-		// Extract CWE IDs and CVE ID efficiently
-		result.Cwes = extractCWEIds(result.DatabaseSpecific)
-		result.Cve = extractCVEId(result.Aliases)
 
 		// Add to batch
 		osvBatch = append(osvBatch, result)
 
 		// Process batch when it reaches the desired size
 		if len(osvBatch) >= batchSize {
-			if err := processBatch(db, osvBatch, ecosystem); err != nil {
+			if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 				log.Printf("Error processing batch for ecosystem %s: %v", ecosystem, err)
 			}
 			osvBatch = osvBatch[:0] // Reset slice but keep capacity
@@ -258,7 +276,7 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 
 	// Process remaining items in the batch
 	if len(osvBatch) > 0 {
-		if err := processBatch(db, osvBatch, ecosystem); err != nil {
+		if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 			log.Printf("Error processing final batch for ecosystem %s: %v", ecosystem, err)
 		}
 	}
@@ -266,8 +284,10 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	return nil
 }
 
-// processBatch inserts OSV records and creates package-vulnerability links
-func processBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) error {
+// InsertBatch inserts OSV records and creates package-vulnerability links.
+// It is shared by the live GCS import and the as-of importer so stored rows
+// and package links are produced identically.
+func InsertBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) error {
 	// Step 1: Insert OSV records
 	if err := pgsql.BatchUpdateOsv(db, osvBatch); err != nil {
 		return fmt.Errorf("batch update failed: %w", err)

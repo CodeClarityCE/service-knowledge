@@ -7,6 +7,8 @@ import (
 	"time"
 
 	knowledge "github.com/CodeClarityCE/service-knowledge/src"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv_asof"
 	"github.com/robfig/cron/v3"
 )
 
@@ -16,9 +18,17 @@ func main() {
 	var daemon = flag.Bool("daemon", false, "Run as daemon with cron scheduler")
 	var debug = flag.Bool("debug", false, "Enable debug logging for cronjobs")
 	var action = ""
+	var asof = ""
+	var advisoryRepo = ""
+	var checkoutDate = ""
+	var epssDate = ""
 
 	// Bind flags
 	flag.StringVar(&action, "action", action, "Action to perform")
+	flag.StringVar(&asof, "asof", asof, "As-of date (YYYY-MM-DD) for the update-asof action")
+	flag.StringVar(&advisoryRepo, "advisory-repo", advisoryRepo, "Path to a github/advisory-database checkout for the update-asof action")
+	flag.StringVar(&checkoutDate, "checkout-date", checkoutDate, "RFC3339 date of the checked-out advisory commit, stamped as osv_last (defaults to --asof)")
+	flag.StringVar(&epssDate, "epss-date", epssDate, "Optional EPSS snapshot date (YYYY-MM-DD) imported by the update-asof action")
 
 	// Parse flags
 	flag.Parse()
@@ -54,6 +64,42 @@ func main() {
 				log.Fatalf("Failed to update knowledge: %v", err)
 			}
 			log.Println("Knowledge update completed successfully")
+		case "update-asof":
+			if asof == "" || advisoryRepo == "" {
+				log.Fatalf("The update-asof action requires --asof and --advisory-repo")
+			}
+			asofTime, err := time.Parse("2006-01-02", asof)
+			if err != nil {
+				log.Fatalf("Invalid --asof date %q (expected YYYY-MM-DD): %v", asof, err)
+			}
+			checkoutTime := asofTime
+			if checkoutDate != "" {
+				checkoutTime, err = time.Parse(time.RFC3339, checkoutDate)
+				if err != nil {
+					log.Fatalf("Invalid --checkout-date %q (expected RFC3339): %v", checkoutDate, err)
+				}
+			}
+
+			log.Printf("Running as-of knowledge update for %s...", asof)
+
+			// Create knowledge service for database connections
+			knowledgeService, err := CreateKnowledgeService()
+			if err != nil {
+				log.Fatalf("Failed to create knowledge service: %v", err)
+			}
+			defer knowledgeService.Close()
+
+			err = osv_asof.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, advisoryRepo, asofTime, checkoutTime)
+			if err != nil {
+				log.Fatalf("Failed to import as-of OSV advisories: %v", err)
+			}
+			if epssDate != "" {
+				err = epss.UpdateAsOf(knowledgeService.DB.Knowledge, epssDate)
+				if err != nil {
+					log.Fatalf("Failed to import dated EPSS scores: %v", err)
+				}
+			}
+			log.Println("As-of knowledge update completed successfully")
 		default:
 			flag.Usage()
 			os.Exit(0)
