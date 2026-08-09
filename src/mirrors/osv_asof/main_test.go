@@ -7,6 +7,7 @@ import (
 	"time"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/google/uuid"
 )
 
 var testAsof = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -179,6 +180,32 @@ func TestPublishedAfter(t *testing.T) {
 		item := knowledge.OSVItem{OSVId: "GHSA-test-test-test", Published: c.published}
 		if got := publishedAfter(item, testAsof); got != c.want {
 			t.Errorf("%s: publishedAfter(%q) = %v, want %v", c.name, c.published, got, c.want)
+		}
+	}
+}
+
+func TestIdsPublishedAfter(t *testing.T) {
+	mk := func(published string) knowledge.OSVItem {
+		return knowledge.OSVItem{Id: uuid.New(), Published: published}
+	}
+	kept := []knowledge.OSVItem{
+		mk("2025-12-31T23:59:59Z"), // before cutoff
+		mk("2026-01-01T12:00:00Z"), // on the asof day (whole day in range)
+		mk(""),                     // no timestamp -> kept
+		mk("not-a-date"),           // unparseable -> kept
+	}
+	dropped := []knowledge.OSVItem{
+		mk("2026-01-02T00:00:00Z"),
+		mk("2026-05-01T08:00:00Z"),
+	}
+
+	ids := idsPublishedAfter(append(append([]knowledge.OSVItem{}, kept...), dropped...), testAsof)
+	if len(ids) != len(dropped) {
+		t.Fatalf("idsPublishedAfter returned %d ids, want %d", len(ids), len(dropped))
+	}
+	for i, item := range dropped {
+		if ids[i] != item.Id {
+			t.Errorf("ids[%d] = %s, want %s (input order preserved)", i, ids[i], item.Id)
 		}
 	}
 }

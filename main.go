@@ -25,10 +25,10 @@ func main() {
 
 	// Bind flags
 	flag.StringVar(&action, "action", action, "Action to perform")
-	flag.StringVar(&asof, "asof", asof, "As-of date (YYYY-MM-DD) for the update-asof action")
+	flag.StringVar(&asof, "asof", asof, "As-of date (YYYY-MM-DD) for the update-asof and filter-asof actions")
 	flag.StringVar(&advisoryRepo, "advisory-repo", advisoryRepo, "Path to a github/advisory-database checkout for the update-asof action")
 	flag.StringVar(&checkoutDate, "checkout-date", checkoutDate, "RFC3339 date of the checked-out advisory commit, stamped as osv_last (defaults to --asof)")
-	flag.StringVar(&epssDate, "epss-date", epssDate, "Optional EPSS snapshot date (YYYY-MM-DD) imported by the update-asof action")
+	flag.StringVar(&epssDate, "epss-date", epssDate, "Optional EPSS snapshot date (YYYY-MM-DD) imported by the update-asof and filter-asof actions")
 
 	// Parse flags
 	flag.Parse()
@@ -100,6 +100,34 @@ func main() {
 				}
 			}
 			log.Println("As-of knowledge update completed successfully")
+		case "filter-asof":
+			if asof == "" {
+				log.Fatalf("The filter-asof action requires --asof")
+			}
+			asofTime, err := time.Parse("2006-01-02", asof)
+			if err != nil {
+				log.Fatalf("Invalid --asof date %q (expected YYYY-MM-DD): %v", asof, err)
+			}
+
+			log.Printf("Filtering OSV knowledge to advisories published on or before %s...", asof)
+
+			knowledgeService, err := CreateKnowledgeService()
+			if err != nil {
+				log.Fatalf("Failed to create knowledge service: %v", err)
+			}
+			defer knowledgeService.Close()
+
+			err = osv_asof.Filter(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, asofTime)
+			if err != nil {
+				log.Fatalf("Failed to filter OSV advisories: %v", err)
+			}
+			if epssDate != "" {
+				err = epss.UpdateAsOf(knowledgeService.DB.Knowledge, epssDate)
+				if err != nil {
+					log.Fatalf("Failed to import dated EPSS scores: %v", err)
+				}
+			}
+			log.Println("As-of knowledge filter completed successfully")
 		default:
 			flag.Usage()
 			os.Exit(0)

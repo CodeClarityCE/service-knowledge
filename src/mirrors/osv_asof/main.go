@@ -136,31 +136,38 @@ func publishedAfter(item knowledge.OSVItem, asof time.Time) bool {
 	return !published.Before(cutoff)
 }
 
-// replaceOsvRows deletes the OSV rows the live mirror maintains and re-inserts
-// the dated set through the mirror's own batch path (osv.InsertBatch), which
-// also rebuilds the package_vulnerability links.
-//
-// Deletion predicate: osv rows whose affected packages contain one of the
-// mirror's ecosystems (JSONB containment, same GIN-indexable @> pattern used
-// elsewhere), plus their package_vulnerability links. This is exactly the set
-// the live mirror can have imported — the osv table is only ever written with
-// advisories from those per-ecosystem zip files — while rows from any other
-// source or ecosystem are left untouched. Both deletes run in one
-// transaction; the inserts reuse the mirror's per-batch transactions.
-func replaceOsvRows(db *bun.DB, items []knowledge.OSVItem) error {
-	ctx := context.Background()
-
+// scopeCondition builds the SQL predicate (and its args) selecting the OSV
+// rows the live mirror maintains: rows whose affected packages contain one of
+// the mirror's ecosystems (JSONB containment, same GIN-indexable @> pattern
+// used elsewhere). This is exactly the set the live mirror can have imported —
+// the osv table is only ever written with advisories from those per-ecosystem
+// zip files — while rows from any other source or ecosystem are left alone.
+func scopeCondition() (string, []interface{}, error) {
 	conditions := make([]string, len(osv.ImportedEcosystems))
 	args := make([]interface{}, len(osv.ImportedEcosystems))
 	for i, ecosystem := range osv.ImportedEcosystems {
 		pattern, err := json.Marshal([]map[string]any{{"package": map[string]any{"ecosystem": ecosystem}}})
 		if err != nil {
-			return fmt.Errorf("failed to marshal ecosystem pattern for %s: %w", ecosystem, err)
+			return "", nil, fmt.Errorf("failed to marshal ecosystem pattern for %s: %w", ecosystem, err)
 		}
 		conditions[i] = "affected @> ?::jsonb"
 		args[i] = string(pattern)
 	}
-	scope := strings.Join(conditions, " OR ")
+	return strings.Join(conditions, " OR "), args, nil
+}
+
+// replaceOsvRows deletes the OSV rows the live mirror maintains and re-inserts
+// the dated set through the mirror's own batch path (osv.InsertBatch), which
+// also rebuilds the package_vulnerability links. Deletion covers the
+// scopeCondition set plus its package_vulnerability links; both deletes run
+// in one transaction, the inserts reuse the mirror's per-batch transactions.
+func replaceOsvRows(db *bun.DB, items []knowledge.OSVItem) error {
+	ctx := context.Background()
+
+	scope, args, err := scopeCondition()
+	if err != nil {
+		return err
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
