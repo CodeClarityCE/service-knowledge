@@ -1,6 +1,6 @@
 module github.com/CodeClarityCE/service-knowledge
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/CodeClarityCE/utility-amqp-helper v0.0.12-alpha
@@ -20,9 +20,11 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/lib/pq v1.12.3 // indirect
+	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
