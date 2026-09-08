@@ -67,7 +67,7 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	var totalErrors int32
-	var totalProcessed int32
+	var totalProcessed atomic.Int32
 
 	// Process packages in batches
 	numBatches := (len(topPackages) + batchSize - 1) / batchSize
@@ -95,7 +95,7 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 				}
 				atomic.AddInt32(&totalErrors, 1)
 			}
-			atomic.AddInt32(&totalProcessed, int32(len(packageBatch)))
+			totalProcessed.Add(int32(len(packageBatch)))
 		}(batch, batchNum)
 	}
 

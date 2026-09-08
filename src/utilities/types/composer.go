@@ -30,7 +30,7 @@ type ComposerSource struct {
 
 func ConvertComposerVersion(composerPackage []ComposerPackage, key string) []Version {
 	var versions []Version
-	for i := 0; i < len(composerPackage); i++ {
+	for i := range composerPackage {
 		var version Version
 		version.Version = composerPackage[i].Version
 		version.Time = composerPackage[i].Time

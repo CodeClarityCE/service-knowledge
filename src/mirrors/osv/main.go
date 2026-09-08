@@ -159,7 +159,7 @@ func extractCWEIds(databaseSpecific map[string]any) []string {
 		return nil
 	}
 
-	cwesRaw, ok := cweIds.([]interface{})
+	cwesRaw, ok := cweIds.([]any)
 	if !ok {
 		return nil
 	}

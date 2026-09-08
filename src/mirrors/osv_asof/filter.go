@@ -54,10 +54,7 @@ func Filter(db *bun.DB, configDB *bun.DB, asof time.Time) error {
 		defer tx.Rollback()
 
 		for start := 0; start < len(drop); start += deleteChunkSize {
-			end := start + deleteChunkSize
-			if end > len(drop) {
-				end = len(drop)
-			}
+			end := min(start+deleteChunkSize, len(drop))
 			chunk := drop[start:end]
 
 			// The package_vulnerability links reference osv.id, so they go first.

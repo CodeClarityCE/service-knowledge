@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -111,10 +112,8 @@ func loadAdvisories(dir string, asof time.Time) ([]knowledge.OSVItem, loadStats,
 // per-ecosystem zip files.
 func inScope(item knowledge.OSVItem) bool {
 	for _, affected := range item.Affected {
-		for _, ecosystem := range osv.ImportedEcosystems {
-			if affected.Package.Ecosystem == ecosystem {
-				return true
-			}
+		if slices.Contains(osv.ImportedEcosystems, affected.Package.Ecosystem) {
+			return true
 		}
 	}
 	return false
@@ -142,9 +141,9 @@ func publishedAfter(item knowledge.OSVItem, asof time.Time) bool {
 // used elsewhere). This is exactly the set the live mirror can have imported —
 // the osv table is only ever written with advisories from those per-ecosystem
 // zip files — while rows from any other source or ecosystem are left alone.
-func scopeCondition() (string, []interface{}, error) {
+func scopeCondition() (string, []any, error) {
 	conditions := make([]string, len(osv.ImportedEcosystems))
-	args := make([]interface{}, len(osv.ImportedEcosystems))
+	args := make([]any, len(osv.ImportedEcosystems))
 	for i, ecosystem := range osv.ImportedEcosystems {
 		pattern, err := json.Marshal([]map[string]any{{"package": map[string]any{"ecosystem": ecosystem}}})
 		if err != nil {
@@ -202,10 +201,7 @@ func replaceOsvRows(db *bun.DB, items []knowledge.OSVItem) error {
 	}
 
 	for start := 0; start < len(items); start += batchSize {
-		end := start + batchSize
-		if end > len(items) {
-			end = len(items)
-		}
+		end := min(start+batchSize, len(items))
 		if err := osv.InsertBatch(db, items[start:end], "github-reviewed"); err != nil {
 			return fmt.Errorf("failed to insert as-of OSV batch: %w", err)
 		}

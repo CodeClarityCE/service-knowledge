@@ -134,10 +134,7 @@ func (opm *OptimizedPackageManager) BatchUpdatePackages(packages []knowledge.Pac
 		// Process packages in smaller chunks to avoid memory pressure
 		const chunkSize = 100
 		for i := 0; i < len(packages); i += chunkSize {
-			end := i + chunkSize
-			if end > len(packages) {
-				end = len(packages)
-			}
+			end := min(i+chunkSize, len(packages))
 
 			chunk := packages[i:end]
 			if err := opm.processBatchChunk(ctx, tx, chunk); err != nil {
@@ -455,8 +452,8 @@ func sendPackageUpdateNotification(packageName string, existingVersions []knowle
 
 		// Get the current version used in this project
 		var result struct {
-			ID     string                 `bun:"id"`
-			Result map[string]interface{} `bun:"result"`
+			ID     string         `bun:"id"`
+			Result map[string]any `bun:"result"`
 		}
 
 		err = codeClarityDB.NewSelect().
@@ -494,7 +491,7 @@ func sendPackageUpdateNotification(packageName string, existingVersions []knowle
 			}
 
 			// Send notification message with dependency type
-			notification := map[string]interface{}{
+			notification := map[string]any{
 				"type":              "package_update",
 				"analysis_id":       analysisID,
 				"organization_id":   organizationID,
@@ -526,27 +523,27 @@ func sendPackageUpdateNotification(packageName string, existingVersions []knowle
 
 // extractCurrentVersionFromSBOM extracts the current version of a package from SBOM result
 // Returns version string and dependency type (prod/dev)
-func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageName string) (string, string) {
-	workspaces, ok := sbomResult["workspaces"].(map[string]interface{})
+func extractCurrentVersionFromSBOM(sbomResult map[string]any, packageName string) (string, string) {
+	workspaces, ok := sbomResult["workspaces"].(map[string]any)
 	if !ok {
 		return "", ""
 	}
 
 	for _, workspace := range workspaces {
-		ws, ok := workspace.(map[string]interface{})
+		ws, ok := workspace.(map[string]any)
 		if !ok {
 			continue
 		}
 
-		start, ok := ws["start"].(map[string]interface{})
+		start, ok := ws["start"].(map[string]any)
 		if !ok {
 			continue
 		}
 
 		// Check production dependencies first
-		if deps, ok := start["dependencies"].([]interface{}); ok {
+		if deps, ok := start["dependencies"].([]any); ok {
 			for _, dep := range deps {
-				if depMap, ok := dep.(map[string]interface{}); ok {
+				if depMap, ok := dep.(map[string]any); ok {
 					if name, ok := depMap["name"].(string); ok && name == packageName {
 						if version, ok := depMap["version"].(string); ok {
 							return version, "production"
@@ -557,9 +554,9 @@ func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageNam
 		}
 
 		// Check dev dependencies
-		if devDeps, ok := start["dev_dependencies"].([]interface{}); ok {
+		if devDeps, ok := start["dev_dependencies"].([]any); ok {
 			for _, dep := range devDeps {
-				if depMap, ok := dep.(map[string]interface{}); ok {
+				if depMap, ok := dep.(map[string]any); ok {
 					if name, ok := depMap["name"].(string); ok && name == packageName {
 						if version, ok := depMap["version"].(string); ok {
 							return version, "development"
@@ -570,12 +567,12 @@ func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageNam
 		}
 
 		// Also check the more detailed dependencies structure if available (but only for direct dependencies)
-		if dependencies, ok := ws["dependencies"].(map[string]interface{}); ok {
+		if dependencies, ok := ws["dependencies"].(map[string]any); ok {
 			for depName, depData := range dependencies {
 				if depName == packageName {
-					if depVersions, ok := depData.(map[string]interface{}); ok {
+					if depVersions, ok := depData.(map[string]any); ok {
 						for version, versionData := range depVersions {
-							if versionInfo, ok := versionData.(map[string]interface{}); ok {
+							if versionInfo, ok := versionData.(map[string]any); ok {
 								// Check if this is a direct dependency using DirectCount (preferred) or Direct boolean
 								isDirect := false
 								if directCount, ok := versionInfo["DirectCount"].(float64); ok && directCount > 0 {
