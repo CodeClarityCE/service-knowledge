@@ -16,6 +16,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
+	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -131,7 +132,12 @@ func UpdateWithSetup() error {
 	return updateDatabases()
 }
 
-func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
+func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
+	// Package-update notifications need the codeclarity database; set it once
+	// here rather than opening an ad-hoc connection per package (see
+	// pgsql.SetCodeClarityDB's doc comment).
+	pgsql.SetCodeClarityDB(codeClarityDB)
+
 	// Update licenses
 	err := licenses.Update(knowledgeDB)
 	if err != nil {
@@ -233,6 +239,12 @@ func updateDatabases() error {
 	configDB := bun.NewDB(sqldb_config, pgdialect.New())
 	defer configDB.Close()
 
+	// Connect to codeclarity database
+	dsn_codeclarity := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Results)
+	sqldb_codeclarity := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_codeclarity), pgdriver.WithTimeout(50*time.Second), tlsOpt))
+	codeClarityDB := bun.NewDB(sqldb_codeclarity, pgdialect.New())
+	defer codeClarityDB.Close()
+
 	// Call the Update function with database connections
-	return Update(knowledgeDB, configDB)
+	return Update(knowledgeDB, configDB, codeClarityDB)
 }

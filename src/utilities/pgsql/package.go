@@ -7,18 +7,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	amqp_helper "github.com/CodeClarityCE/utility-amqp-helper"
-	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 )
+
+// codeClarityDB is the shared, pooled connection to the codeclarity database,
+// set once via SetCodeClarityDB before any package updates run. Package
+// update notifications need it (to look up affected SBOM results) but must
+// not open their own ad-hoc connections per call -- this mirrors the
+// amqp_helper package's own internally-managed connection.
+var codeClarityDB *bun.DB
+
+// SetCodeClarityDB registers the pooled codeclarity database connection used
+// by sendPackageUpdateNotification.
+func SetCodeClarityDB(db *bun.DB) {
+	codeClarityDB = db
+}
 
 // Optimized connection pool and prepared statement management
 type OptimizedPackageManager struct {
@@ -375,14 +384,15 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 		return err
 	}
 
-	// Send notification about new package versions if found
+	// Send notification about new package versions if found. Runs inline
+	// (not detached) so it stays bounded by the caller's own concurrency
+	// limit and reuses the shared, pooled codeClarityDB set via
+	// SetCodeClarityDB -- see that var's doc comment for why.
 	if len(newVersions) > 0 {
-		go func() {
-			err := sendPackageUpdateNotification(db, pack.Name, existingPackage.Versions, newVersions)
-			if err != nil {
-				log.Printf("Failed to send package update notification for %s: %v", pack.Name, err)
-			}
-		}()
+		err := sendPackageUpdateNotification(pack.Name, existingPackage.Versions, newVersions)
+		if err != nil {
+			log.Printf("Failed to send package update notification for %s: %v", pack.Name, err)
+		}
 	}
 
 	return nil
@@ -390,21 +400,10 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 
 // sendPackageUpdateNotification checks for SBOM results that use this package
 // and sends notifications to users about available updates
-func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, existingVersions []knowledge.Version, newVersions []knowledge.Version) error {
-	// Connect to codeclarity database to check for SBOM results
-	host := os.Getenv("PG_DB_HOST")
-	port := os.Getenv("PG_DB_PORT")
-	user := os.Getenv("PG_DB_USER")
-	password := os.Getenv("PG_DB_PASSWORD")
-
-	if host == "" || port == "" || user == "" || password == "" {
-		return fmt.Errorf("database connection parameters not set")
+func sendPackageUpdateNotification(packageName string, existingVersions []knowledge.Version, newVersions []knowledge.Version) error {
+	if codeClarityDB == nil {
+		return fmt.Errorf("codeClarityDB not set: call SetCodeClarityDB before updating packages")
 	}
-
-	dsn := dbhelper.BuildDSN(user, password, host, port, "codeclarity")
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(30*time.Second), dbhelper.BuildPgdriverTLSOption()))
-	codeClarityDB := bun.NewDB(sqldb, pgdialect.New())
-	defer codeClarityDB.Close()
 
 	// Find the latest version from new versions (assuming semantic versioning)
 	var latestNewVersion knowledge.Version

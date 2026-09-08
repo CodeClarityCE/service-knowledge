@@ -59,7 +59,7 @@ func main() {
 			}
 			defer knowledgeService.Close()
 
-			err = knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
+			err = knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
 			if err != nil {
 				log.Fatalf("Failed to update knowledge: %v", err)
 			}
@@ -164,7 +164,7 @@ func main() {
 			log.Printf("[%s] Starting scheduled knowledge update...", timestamp)
 
 			start := time.Now()
-			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
+			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
 			duration := time.Since(start)
 
 			if err != nil {
@@ -220,7 +220,7 @@ func main() {
 			log.Printf("[%s] Running scheduled knowledge update...", timestamp)
 
 			start := time.Now()
-			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
+			err := knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
 			duration := time.Since(start)
 
 			if err != nil {
