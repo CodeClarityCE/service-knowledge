@@ -26,7 +26,7 @@ type Npm struct {
 
 type NpmVersion struct {
 	Version              string            `json:"version"`
-	Author               interface{}       `json:"author"`
+	Author               any               `json:"author"`
 	Engines              any               `json:"engines"`
 	Dist                 Dist              `json:"dist"`
 	License              any               `json:"license"`
@@ -38,7 +38,7 @@ type NpmVersion struct {
 	BundleDependencies   any               `json:"bundleDependencies"`
 	BundledDependencies  any               `json:"bundledDependencies"`
 	OptionalDependencies any               `json:"optionalDependencies"`
-	Deprecated           interface{}       `json:"deprecated"`
+	Deprecated           any               `json:"deprecated"`
 }
 
 type LicenseNpm struct {

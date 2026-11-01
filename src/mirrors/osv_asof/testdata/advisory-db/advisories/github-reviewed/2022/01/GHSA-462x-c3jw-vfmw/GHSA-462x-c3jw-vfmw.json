@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.4.0",
+  "id": "GHSA-462x-c3jw-vfmw",
+  "modified": "2022-04-25T20:20:31Z",
+  "published": "2022-01-21T23:52:53Z",
+  "withdrawn": "2022-04-25T20:20:31Z",
+  "aliases": [],
+  "summary": "Withdrawn: Infinite loop in colors",
+  "details": "This advisory has been withdrawn because the behavior was intentionally introduced by the maintainer.",
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "colors",
+        "purl": "pkg:npm/colors"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "1.4.1"
+            },
+            {
+              "fixed": "1.4.44"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "PACKAGE",
+      "url": "https://github.com/Marak/colors.js"
+    }
+  ],
+  "database_specific": {
+    "cwe_ids": [],
+    "severity": "LOW",
+    "github_reviewed": true
+  }
+}

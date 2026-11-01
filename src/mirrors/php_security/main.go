@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
@@ -114,15 +115,16 @@ func updateFriendsOfPHPAdvisories(db *bun.DB) error {
 // fetchBatchAdvisories fetches advisories for multiple packages from Packagist
 func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 	// Build URL with multiple packages
-	url := "https://packagist.org/api/security-advisories/?"
+	var url strings.Builder
+	url.WriteString("https://packagist.org/api/security-advisories/?")
 	for i, pkg := range packages {
 		if i > 0 {
-			url += "&"
+			url.WriteString("&")
 		}
-		url += fmt.Sprintf("packages[]=%s", pkg)
+		url.WriteString(fmt.Sprintf("packages[]=%s", pkg))
 	}
 
-	resp, err := http.Get(url)
+	resp, err := http.Get(url.String())
 	if err != nil {
 		return fmt.Errorf("failed to fetch advisories: %w", err)
 	}

@@ -43,25 +43,25 @@ type PackagistVersionInfo struct {
 	VersionNormalized  string            `json:"version_normalized"`
 	Source             PackagistSource   `json:"source"`
 	Dist               PackagistDist     `json:"dist"`
-	Require            interface{}       `json:"require"`     // Can be map[string]string or string
-	RequireDev         interface{}       `json:"require-dev"` // Can be map[string]string or string
-	Suggest            interface{}       `json:"suggest"`     // Can be map[string]string or string
-	Provide            interface{}       `json:"provide"`     // Can be map[string]string or string
-	Replace            interface{}       `json:"replace"`     // Can be map[string]string or string
-	Conflict           interface{}       `json:"conflict"`    // Can be map[string]string or string
+	Require            any               `json:"require"`     // Can be map[string]string or string
+	RequireDev         any               `json:"require-dev"` // Can be map[string]string or string
+	Suggest            any               `json:"suggest"`     // Can be map[string]string or string
+	Provide            any               `json:"provide"`     // Can be map[string]string or string
+	Replace            any               `json:"replace"`     // Can be map[string]string or string
+	Conflict           any               `json:"conflict"`    // Can be map[string]string or string
 	Time               string            `json:"time"`
 	Type               string            `json:"type"`
-	Extra              interface{}       `json:"extra"` // Can be string or map
+	Extra              any               `json:"extra"` // Can be string or map
 	InstallationSource string            `json:"installation-source"`
-	Autoload           interface{}       `json:"autoload"` // Can be map or string
+	Autoload           any               `json:"autoload"` // Can be map or string
 	NotificationUrl    string            `json:"notification-url"`
-	License            interface{}       `json:"license"` // Can be string or []string
+	License            any               `json:"license"` // Can be string or []string
 	Authors            []PackagistAuthor `json:"authors"`
 	Description        string            `json:"description"`
 	Keywords           []string          `json:"keywords"`
 	Homepage           string            `json:"homepage"`
-	Support            interface{}       `json:"support"` // Can be map or string
-	Funding            interface{}       `json:"funding"` // Can be string or []PackagistFunding
+	Support            any               `json:"support"` // Can be map or string
+	Funding            any               `json:"funding"` // Can be string or []PackagistFunding
 }
 
 type PackagistSource struct {
@@ -210,13 +210,13 @@ func downloadPackagistWithRetry(packageName string, retryCount int) (*PackagistP
 }
 
 // NormalizeDependencies converts various dependency formats to a consistent map[string]string
-func NormalizeDependencies(deps interface{}) map[string]string {
+func NormalizeDependencies(deps any) map[string]string {
 	if deps == nil {
 		return nil
 	}
 
 	switch d := deps.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		result := make(map[string]string)
 		for k, v := range d {
 			if str, ok := v.(string); ok {
@@ -235,7 +235,7 @@ func NormalizeDependencies(deps interface{}) map[string]string {
 }
 
 // NormalizeFunding converts various funding formats to a consistent structure
-func NormalizeFunding(funding interface{}) interface{} {
+func NormalizeFunding(funding any) any {
 	if funding == nil {
 		return nil
 	}
@@ -246,12 +246,12 @@ func NormalizeFunding(funding interface{}) interface{} {
 		return []map[string]string{
 			{"type": "custom", "url": f},
 		}
-	case []interface{}:
+	case []any:
 		// Already an array, return as is
 		return f
-	case map[string]interface{}:
+	case map[string]any:
 		// Single funding object, wrap in array
-		return []interface{}{f}
+		return []any{f}
 	default:
 		return funding
 	}

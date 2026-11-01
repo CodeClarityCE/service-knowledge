@@ -16,6 +16,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
+	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -68,13 +69,15 @@ func setupDatabases(confirm bool, daemonMode bool) error {
 		return fmt.Errorf("PG_DB_PASSWORD is not set")
 	}
 
-	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second)))
+	tlsOpt := dbhelper.BuildPgdriverTLSOption()
+
+	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second), tlsOpt))
 	db := bun.NewDB(sqldb, pgdialect.New())
 	defer db.Close()
 
-	dsn_config := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Config + "?sslmode=disable"
-	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
+	dsn_config := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Config)
+	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second), tlsOpt))
 	db_config := bun.NewDB(sqldb_config, pgdialect.New())
 	defer db_config.Close()
 
@@ -129,7 +132,12 @@ func UpdateWithSetup() error {
 	return updateDatabases()
 }
 
-func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
+func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
+	// Package-update notifications need the codeclarity database; set it once
+	// here rather than opening an ad-hoc connection per package (see
+	// pgsql.SetCodeClarityDB's doc comment).
+	pgsql.SetCodeClarityDB(codeClarityDB)
+
 	// Update licenses
 	err := licenses.Update(knowledgeDB)
 	if err != nil {
@@ -145,7 +153,7 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB) error {
 	}
 
 	// Update vulnerabilities
-	err = osv.Update(knowledgeDB)
+	err = osv.Update(knowledgeDB, configDB)
 	if err != nil {
 		log.Printf("%v", err)
 		// return err
@@ -217,18 +225,26 @@ func updateDatabases() error {
 		return fmt.Errorf("PG_DB_PASSWORD is not set")
 	}
 
+	tlsOpt := dbhelper.BuildPgdriverTLSOption()
+
 	// Connect to knowledge database
-	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second)))
+	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(120*time.Second), tlsOpt))
 	knowledgeDB := bun.NewDB(sqldb, pgdialect.New())
 	defer knowledgeDB.Close()
 
 	// Connect to config database
-	dsn_config := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Plugins + "?sslmode=disable"
-	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second)))
+	dsn_config := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Plugins)
+	sqldb_config := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_config), pgdriver.WithTimeout(50*time.Second), tlsOpt))
 	configDB := bun.NewDB(sqldb_config, pgdialect.New())
 	defer configDB.Close()
 
+	// Connect to codeclarity database
+	dsn_codeclarity := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Results)
+	sqldb_codeclarity := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn_codeclarity), pgdriver.WithTimeout(50*time.Second), tlsOpt))
+	codeClarityDB := bun.NewDB(sqldb_codeclarity, pgdialect.New())
+	defer codeClarityDB.Close()
+
 	// Call the Update function with database connections
-	return Update(knowledgeDB, configDB)
+	return Update(knowledgeDB, configDB, codeClarityDB)
 }

@@ -25,9 +25,9 @@ func CreatePackageInfoNpm(result types.Npm) knowledge.Package {
 		if _, ok := result.Repository.(string); ok {
 			pack.Source.Type = "string"
 			pack.Source.Url = result.Repository.(string)
-		} else if _, ok := result.Repository.(map[string]interface{}); ok {
-			sourceType := result.Repository.(map[string]interface{})["type"]
-			sourceUrl := result.Repository.(map[string]interface{})["url"]
+		} else if _, ok := result.Repository.(map[string]any); ok {
+			sourceType := result.Repository.(map[string]any)["type"]
+			sourceUrl := result.Repository.(map[string]any)["url"]
 			if sourceType != nil {
 				pack.Source.Type = sourceType.(string)
 			}

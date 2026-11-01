@@ -37,7 +37,7 @@ func TestUpdate(t *testing.T) {
 
 	os.Setenv("NPM_URL", "https://replicate.npmjs.com/")
 
-	dsn := "postgres://" + user + ":" + password + "@" + host + ":" + port + "/" + dbhelper.Config.Database.Knowledge + "?sslmode=disable"
+	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	db := bun.NewDB(sqldb, pgdialect.New())
 	defer db.Close()

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +14,20 @@ import (
 	amqp_helper "github.com/CodeClarityCE/utility-amqp-helper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 )
+
+// codeClarityDB is the shared, pooled connection to the codeclarity database,
+// set once via SetCodeClarityDB before any package updates run. Package
+// update notifications need it (to look up affected SBOM results) but must
+// not open their own ad-hoc connections per call -- this mirrors the
+// amqp_helper package's own internally-managed connection.
+var codeClarityDB *bun.DB
+
+// SetCodeClarityDB registers the pooled codeclarity database connection used
+// by sendPackageUpdateNotification.
+func SetCodeClarityDB(db *bun.DB) {
+	codeClarityDB = db
+}
 
 // Optimized connection pool and prepared statement management
 type OptimizedPackageManager struct {
@@ -124,10 +134,7 @@ func (opm *OptimizedPackageManager) BatchUpdatePackages(packages []knowledge.Pac
 		// Process packages in smaller chunks to avoid memory pressure
 		const chunkSize = 100
 		for i := 0; i < len(packages); i += chunkSize {
-			end := i + chunkSize
-			if end > len(packages) {
-				end = len(packages)
-			}
+			end := min(i+chunkSize, len(packages))
 
 			chunk := packages[i:end]
 			if err := opm.processBatchChunk(ctx, tx, chunk); err != nil {
@@ -304,64 +311,85 @@ func (opm *OptimizedPackageManager) updateStats(packagesProcessed, versionsProce
 // Returns an error if any operation fails.
 func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 
-	var existingPackage knowledge.Package
-	err := db.NewSelect().Model(&existingPackage).Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
-	if err != nil {
-		_, err := db.NewInsert().Model(&pack).Exec(context.Background())
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err = db.NewUpdate().Model(&pack).Where("id = ?", existingPackage.Id).Exec(context.Background())
-		if err != nil {
-			return err
-		}
-	}
+	ctx := context.Background()
 
-	err = db.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(context.Background())
+	// Idempotent, concurrency-safe upsert path mirroring the batch importer
+	// (mirrors/js/main.go). Runs in a single transaction so concurrent
+	// follower replicas touching the same package cannot race into duplicate
+	// inserts or lost updates.
+	var existingPackage knowledge.Package
+	var newVersions []knowledge.Version
+
+	err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Upsert the package on its (name, language) unique key.
+		_, err := tx.NewInsert().
+			Model(&pack).
+			On("CONFLICT (name, language) DO UPDATE").
+			Set("description = EXCLUDED.description").
+			Set("homepage = EXCLUDED.homepage").
+			Set("latest_version = EXCLUDED.latest_version").
+			Set("\"time\" = EXCLUDED.\"time\"").
+			Set("keywords = EXCLUDED.keywords").
+			Set("source = EXCLUDED.source").
+			Set("license = EXCLUDED.license").
+			Set("licenses = EXCLUDED.licenses").
+			Set("extra = EXCLUDED.extra").
+			Exec(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Reload the package (with its current versions) to resolve its id and
+		// to determine which incoming versions are genuinely new.
+		err = tx.NewSelect().Model(&existingPackage).Relation("Versions").Where("name = ? AND language = ?", pack.Name, pack.Language).Scan(ctx)
+		if err != nil {
+			return err
+		}
+
+		existingVersionSet := make(map[string]bool, len(existingPackage.Versions))
+		for _, v := range existingPackage.Versions {
+			existingVersionSet[v.Version] = true
+		}
+
+		// Upsert versions (stable only) on their (package_id, version) unique key.
+		for _, version := range pack.Versions {
+			if isPreviewVersion(version.Version) {
+				continue
+			}
+
+			version.PackageID = existingPackage.Id
+			if !existingVersionSet[version.Version] {
+				newVersions = append(newVersions, version)
+			}
+
+			_, err := tx.NewInsert().
+				Model(&version).
+				On("CONFLICT (package_id, version) DO UPDATE").
+				Set("dependencies = EXCLUDED.dependencies").
+				Set("dev_dependencies = EXCLUDED.dev_dependencies").
+				Set("extra = EXCLUDED.extra").
+				Set("updated_at = NOW()").
+				Exec(ctx)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	// Insert new versions (only stable versions)
-	var newVersions []knowledge.Version
-	for _, version := range pack.Versions {
-		// Skip preview/prerelease versions
-		if isPreviewVersion(version.Version) {
-			continue
-		}
-
-		version.PackageID = existingPackage.Id
-		found := false
-		// Check if the version already exists
-		for _, existingVersion := range existingPackage.Versions {
-			if existingVersion.Version == version.Version {
-				found = true
-				break
-			}
-		}
-		if !found { // If the version doesn't exist, insert it
-			_, err := db.NewInsert().Model(&version).Exec(context.Background())
-			if err != nil {
-				return err
-			}
-			newVersions = append(newVersions, version)
-		} else { // If the version exists, update it
-			_, err := db.NewUpdate().Model(&version).Where("package_id = ? and version = ?", existingPackage.Id, version.Version).Exec(context.Background())
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	// Send notification about new package versions if found
+	// Send notification about new package versions if found. Runs inline
+	// (not detached) so it stays bounded by the caller's own concurrency
+	// limit and reuses the shared, pooled codeClarityDB set via
+	// SetCodeClarityDB -- see that var's doc comment for why.
 	if len(newVersions) > 0 {
-		go func() {
-			err := sendPackageUpdateNotification(db, pack.Name, existingPackage.Versions, newVersions)
-			if err != nil {
-				log.Printf("Failed to send package update notification for %s: %v", pack.Name, err)
-			}
-		}()
+		err := sendPackageUpdateNotification(pack.Name, existingPackage.Versions, newVersions)
+		if err != nil {
+			log.Printf("Failed to send package update notification for %s: %v", pack.Name, err)
+		}
 	}
 
 	return nil
@@ -369,21 +397,10 @@ func UpdatePackage(db *bun.DB, pack knowledge.Package) error {
 
 // sendPackageUpdateNotification checks for SBOM results that use this package
 // and sends notifications to users about available updates
-func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, existingVersions []knowledge.Version, newVersions []knowledge.Version) error {
-	// Connect to codeclarity database to check for SBOM results
-	host := os.Getenv("PG_DB_HOST")
-	port := os.Getenv("PG_DB_PORT")
-	user := os.Getenv("PG_DB_USER")
-	password := os.Getenv("PG_DB_PASSWORD")
-
-	if host == "" || port == "" || user == "" || password == "" {
-		return fmt.Errorf("database connection parameters not set")
+func sendPackageUpdateNotification(packageName string, existingVersions []knowledge.Version, newVersions []knowledge.Version) error {
+	if codeClarityDB == nil {
+		return fmt.Errorf("codeClarityDB not set: call SetCodeClarityDB before updating packages")
 	}
-
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/codeclarity?sslmode=disable", user, password, host, port)
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithTimeout(30*time.Second)))
-	codeClarityDB := bun.NewDB(sqldb, pgdialect.New())
-	defer codeClarityDB.Close()
 
 	// Find the latest version from new versions (assuming semantic versioning)
 	var latestNewVersion knowledge.Version
@@ -435,8 +452,8 @@ func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, exis
 
 		// Get the current version used in this project
 		var result struct {
-			ID     string                 `bun:"id"`
-			Result map[string]interface{} `bun:"result"`
+			ID     string         `bun:"id"`
+			Result map[string]any `bun:"result"`
 		}
 
 		err = codeClarityDB.NewSelect().
@@ -474,7 +491,7 @@ func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, exis
 			}
 
 			// Send notification message with dependency type
-			notification := map[string]interface{}{
+			notification := map[string]any{
 				"type":              "package_update",
 				"analysis_id":       analysisID,
 				"organization_id":   organizationID,
@@ -506,27 +523,27 @@ func sendPackageUpdateNotification(knowledgeDB *bun.DB, packageName string, exis
 
 // extractCurrentVersionFromSBOM extracts the current version of a package from SBOM result
 // Returns version string and dependency type (prod/dev)
-func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageName string) (string, string) {
-	workspaces, ok := sbomResult["workspaces"].(map[string]interface{})
+func extractCurrentVersionFromSBOM(sbomResult map[string]any, packageName string) (string, string) {
+	workspaces, ok := sbomResult["workspaces"].(map[string]any)
 	if !ok {
 		return "", ""
 	}
 
 	for _, workspace := range workspaces {
-		ws, ok := workspace.(map[string]interface{})
+		ws, ok := workspace.(map[string]any)
 		if !ok {
 			continue
 		}
 
-		start, ok := ws["start"].(map[string]interface{})
+		start, ok := ws["start"].(map[string]any)
 		if !ok {
 			continue
 		}
 
 		// Check production dependencies first
-		if deps, ok := start["dependencies"].([]interface{}); ok {
+		if deps, ok := start["dependencies"].([]any); ok {
 			for _, dep := range deps {
-				if depMap, ok := dep.(map[string]interface{}); ok {
+				if depMap, ok := dep.(map[string]any); ok {
 					if name, ok := depMap["name"].(string); ok && name == packageName {
 						if version, ok := depMap["version"].(string); ok {
 							return version, "production"
@@ -537,9 +554,9 @@ func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageNam
 		}
 
 		// Check dev dependencies
-		if devDeps, ok := start["dev_dependencies"].([]interface{}); ok {
+		if devDeps, ok := start["dev_dependencies"].([]any); ok {
 			for _, dep := range devDeps {
-				if depMap, ok := dep.(map[string]interface{}); ok {
+				if depMap, ok := dep.(map[string]any); ok {
 					if name, ok := depMap["name"].(string); ok && name == packageName {
 						if version, ok := depMap["version"].(string); ok {
 							return version, "development"
@@ -550,12 +567,12 @@ func extractCurrentVersionFromSBOM(sbomResult map[string]interface{}, packageNam
 		}
 
 		// Also check the more detailed dependencies structure if available (but only for direct dependencies)
-		if dependencies, ok := ws["dependencies"].(map[string]interface{}); ok {
+		if dependencies, ok := ws["dependencies"].(map[string]any); ok {
 			for depName, depData := range dependencies {
 				if depName == packageName {
-					if depVersions, ok := depData.(map[string]interface{}); ok {
+					if depVersions, ok := depData.(map[string]any); ok {
 						for version, versionData := range depVersions {
-							if versionInfo, ok := versionData.(map[string]interface{}); ok {
+							if versionInfo, ok := versionData.(map[string]any); ok {
 								// Check if this is a direct dependency using DirectCount (preferred) or Direct boolean
 								isDirect := false
 								if directCount, ok := versionInfo["DirectCount"].(float64); ok && directCount > 0 {
