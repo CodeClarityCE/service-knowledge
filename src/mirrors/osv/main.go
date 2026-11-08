@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -79,19 +80,29 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 	log.Println("Start updating OSV vulnerabilities")
 	bar := progressbar.Default(int64(len(ImportedEcosystems)))
 
-	for _, ecosystem := range ImportedEcosystems {
+	err := importEcosystems(ImportedEcosystems, func(ecosystem string) error {
+		defer bar.Add(1)
 		log.Printf("Processing ecosystem: %s", ecosystem)
 		url := "https://osv-vulnerabilities.storage.googleapis.com/" + ecosystem + "/all.zip"
-
-		if err := processEcosystem(db, ecosystem, url); err != nil {
-			log.Printf("Error processing ecosystem %s: %v", ecosystem, err)
-			// Continue with other ecosystems even if one fails
-		}
-
-		bar.Add(1)
+		return processEcosystem(db, ecosystem, url)
+	})
+	if err != nil {
+		return err
 	}
 
 	return SetLastOSVSync(db_config, time.Now())
+}
+
+// importEcosystems tries every ecosystem and reports all that failed.
+func importEcosystems(ecosystems []string, process func(string) error) error {
+	var failures []error
+	for _, ecosystem := range ecosystems {
+		if err := process(ecosystem); err != nil {
+			log.Printf("Error processing ecosystem %s: %v", ecosystem, err)
+			failures = append(failures, fmt.Errorf("%s: %w", ecosystem, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // SetLastOSVSync stamps osv_last on the shared config row. The update is
@@ -247,6 +258,7 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	// Process files in batches for better performance
 	const batchSize = 100
 	var osvBatch []knowledge.OSVItem
+	var batchFailures []error
 
 	// Read all the files from zip archive
 	for _, zipFile := range zipReader.File {
@@ -269,6 +281,7 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 		if len(osvBatch) >= batchSize {
 			if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 				log.Printf("Error processing batch for ecosystem %s: %v", ecosystem, err)
+				batchFailures = append(batchFailures, err)
 			}
 			osvBatch = osvBatch[:0] // Reset slice but keep capacity
 		}
@@ -278,10 +291,11 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	if len(osvBatch) > 0 {
 		if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 			log.Printf("Error processing final batch for ecosystem %s: %v", ecosystem, err)
+			batchFailures = append(batchFailures, err)
 		}
 	}
 
-	return nil
+	return errors.Join(batchFailures...)
 }
 
 // InsertBatch inserts OSV records and creates package-vulnerability links.
