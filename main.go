@@ -8,6 +8,7 @@ import (
 
 	knowledge "github.com/CodeClarityCE/service-knowledge/src"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv_asof"
 	"github.com/robfig/cron/v3"
 )
@@ -64,6 +65,20 @@ func main() {
 				log.Fatalf("Failed to update knowledge: %v", err)
 			}
 			log.Println("Knowledge update completed successfully")
+		case "update-osv":
+			log.Println("Running OSV-only knowledge update...")
+
+			knowledgeService, err := CreateKnowledgeService()
+			if err != nil {
+				log.Fatalf("Failed to create knowledge service: %v", err)
+			}
+			defer knowledgeService.Close()
+
+			err = osv.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
+			if err != nil {
+				log.Fatalf("Failed to update OSV advisories: %v", err)
+			}
+			log.Println("OSV update completed successfully")
 		case "update-asof":
 			if asof == "" || advisoryRepo == "" {
 				log.Fatalf("The update-asof action requires --asof and --advisory-repo")
