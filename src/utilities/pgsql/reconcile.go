@@ -149,6 +149,11 @@ func ReconcileGcve(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error 
 	return retireAbsent(db, knowledge.SourceGCVE, "gcve", "gcve_id", "gcve_id", "TRUE", nil, snapshotIDs, retiredAt)
 }
 
+// ReconcileFriendsOfPhp retires active advisories that a complete repository snapshot no longer contains.
+func ReconcileFriendsOfPhp(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error {
+	return retireAbsent(db, knowledge.SourceFriendsOfPHP, "friends_of_php", "advisory_id", "friendsofphp_id", "TRUE", nil, snapshotIDs, retiredAt)
+}
+
 // SyncOsvRetirement retires the given advisories that are withdrawn and reactivates those the source asserts again.
 func SyncOsvRetirement(db *bun.DB, osvIDs []string) error {
 	ctx := context.Background()
