@@ -170,8 +170,17 @@ func ParseAdvisory(data []byte) (knowledge.OSVItem, error) {
 	// Extract CWE IDs and CVE ID efficiently
 	result.Cwes = extractCWEIds(result.DatabaseSpecific)
 	result.Cve = extractCVEId(result.Aliases)
+	result.Kind = advisoryKind(result.OSVId)
 
 	return result, nil
+}
+
+// advisoryKind tells malicious package advisories apart by their MAL- ID prefix.
+func advisoryKind(osvId string) string {
+	if strings.HasPrefix(osvId, "MAL-") {
+		return knowledge.AdvisoryKindMalicious
+	}
+	return knowledge.AdvisoryKindVulnerability
 }
 
 // extractCWEIds efficiently extracts CWE IDs from the database specific field
