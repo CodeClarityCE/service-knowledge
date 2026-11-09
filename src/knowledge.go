@@ -185,11 +185,11 @@ func Validate(knowledgeDB *bun.DB) error {
 		return err
 	}
 	report, err := validation.Run(knowledgeDB, time.Now())
-	if err != nil {
-		return fmt.Errorf("knowledge validation could not finish: %w", err)
-	}
 	for _, finding := range report.Findings {
 		logger.WithFields(logrus.Fields{"source": finding.Source, "check": finding.Check, "error": finding.Message}).Error("Knowledge source failed validation")
+	}
+	if err != nil {
+		return fmt.Errorf("knowledge validation could not finish: %w", err)
 	}
 	if report.Failed() {
 		return fmt.Errorf("%w: %d checks failed", ErrValidationFailed, len(report.Findings))

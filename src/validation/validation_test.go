@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,5 +286,52 @@ func TestValidLinksPass(t *testing.T) {
 
 	if report := validate(t, db); report.Failed() {
 		t.Errorf("unexpected findings: %+v", report.Findings)
+	}
+}
+
+func TestCheckThatCannotRunIsRecordedAndLaterSourcesStillRun(t *testing.T) {
+	db := setup(t)
+	validate(t, db)
+	exec(t, db, "DROP TABLE gcve")
+
+	report := validate(t, db)
+
+	wantFinding(t, report, knowledge.SourceGCVE, CheckIncomplete)
+	row := read(t, db, knowledge.SourceGCVE)
+	if row.ValidationError == nil {
+		t.Fatal("validation_error should record the incomplete validation")
+	}
+	if row.ValidatedRowCount == nil || *row.ValidatedRowCount != 100 {
+		t.Errorf("validated_row_count = %v, want the last good 100", row.ValidatedRowCount)
+	}
+	if row := read(t, db, knowledge.SourceOSV); row.ValidationError != nil {
+		t.Errorf("osv validation_error = %q, want NULL", *row.ValidationError)
+	}
+}
+
+func TestStaleSourceIsNotRecordedAsAValidationFailure(t *testing.T) {
+	db := setup(t)
+	validate(t, db)
+	exec(t, db, "UPDATE knowledge_source_sync SET watermark = NULL WHERE source = 'nvd'")
+
+	report := validate(t, db)
+
+	wantFinding(t, report, knowledge.SourceNVD, CheckFreshness)
+	if row := read(t, db, knowledge.SourceNVD); row.ValidationError != nil {
+		t.Errorf("validation_error = %q, want NULL so the source reads as stale", *row.ValidationError)
+	}
+}
+
+func TestStaleSourceWithAnotherFailureKeepsOnlyThatFailure(t *testing.T) {
+	db := setup(t)
+	validate(t, db)
+	exec(t, db, "UPDATE knowledge_source_sync SET watermark = NULL WHERE source = 'nvd'")
+	deleteVulnerabilities(t, db, knowledge.SourceNVD, 50)
+
+	validate(t, db)
+
+	row := read(t, db, knowledge.SourceNVD)
+	if row.ValidationError == nil || strings.Contains(*row.ValidationError, CheckFreshness) {
+		t.Errorf("validation_error = %v, want only the row count failure", row.ValidationError)
 	}
 }
