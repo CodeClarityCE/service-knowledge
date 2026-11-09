@@ -16,8 +16,11 @@ import (
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 )
+
+var logger = logrus.StandardLogger()
 
 // apiURLTemplate is the NVD CVE API, with page size, start index and modified-date window.
 var apiURLTemplate = "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
@@ -110,7 +113,7 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 // syncFull fetches every CVE, then retires stored records NVD no longer publishes.
 func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan struct{}) (time.Time, error) {
 	started := time.Now().UTC()
-	log.Println("No NVD watermark, performing a full fetch")
+	logger.WithFields(logrus.Fields{"source": knowledge.SourceNVD}).Info("No NVD watermark, performing a full fetch")
 
 	total, snapshot, err := syncPages(db, fullURLTemplateFor, apiKey, rateLimiter)
 	if err != nil {

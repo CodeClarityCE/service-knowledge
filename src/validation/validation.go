@@ -1,7 +1,5 @@
-// Package validation checks the knowledge database after an update.
-//
-// It cannot undo a bad update, because updates are applied in place. A failing
-// source keeps its last validated counts and raises an alert.
+// Package validation checks the knowledge database after an update and alerts on failure.
+// Updates are applied in place, so it cannot undo them; a failing source keeps its last counts.
 package validation
 
 import (
@@ -22,6 +20,8 @@ const (
 	CheckMaliciousCount = "malicious_count"
 	CheckFreshness      = "freshness"
 	CheckIntegrity      = "referential_integrity"
+	// CheckIncomplete marks a source whose checks could not all run.
+	CheckIncomplete = "incomplete"
 )
 
 // maxDropPercent is the largest row-count drop a source may show between validations.
@@ -77,35 +77,46 @@ type counts struct {
 }
 
 // Run validates every source at the time now and records each source's result.
+// A source whose checks could not run is recorded as failed and the rest still run.
 func Run(db *bun.DB, now time.Time) (Report, error) {
 	ctx := context.Background()
 	var report Report
+	var failures []error
 	for _, source := range sources {
-		current, err := countSource(ctx, db, source)
-		if err != nil {
-			return report, fmt.Errorf("%s: count rows: %w", source, err)
-		}
-		floors, err := readFloors(ctx, db, source)
-		if err != nil {
-			return report, fmt.Errorf("%s: read floors: %w", source, err)
-		}
-		findings := checkCounts(source, current, floors)
-		freshness, err := checkFreshness(ctx, db, source, now)
-		if err != nil {
-			return report, fmt.Errorf("%s: read watermark: %w", source, err)
-		}
-		findings = append(findings, freshness...)
-		integrity, err := checkIntegrity(ctx, db, source)
-		if err != nil {
-			return report, fmt.Errorf("%s: check integrity: %w", source, err)
-		}
-		findings = append(findings, integrity...)
+		current, findings := checkSource(ctx, db, source, now)
 		report.Findings = append(report.Findings, findings...)
 		if err := record(ctx, db, source, current, findings, now); err != nil {
-			return report, fmt.Errorf("%s: record validation: %w", source, err)
+			failures = append(failures, fmt.Errorf("%s: record validation: %w", source, err))
 		}
 	}
-	return report, nil
+	return report, errors.Join(failures...)
+}
+
+// checkSource runs every check for source, adding a finding if one could not run.
+func checkSource(ctx context.Context, db *bun.DB, source string, now time.Time) (counts, []Finding) {
+	current, err := countSource(ctx, db, source)
+	if err != nil {
+		return counts{}, []Finding{incomplete(source, "count rows", err)}
+	}
+	floors, err := readFloors(ctx, db, source)
+	if err != nil {
+		return current, []Finding{incomplete(source, "read floors", err)}
+	}
+	findings := checkCounts(source, current, floors)
+	freshness, err := checkFreshness(ctx, db, source, now)
+	if err != nil {
+		return current, append(findings, incomplete(source, "read watermark", err))
+	}
+	findings = append(findings, freshness...)
+	integrity, err := checkIntegrity(ctx, db, source)
+	if err != nil {
+		return current, append(findings, incomplete(source, "check integrity", err))
+	}
+	return current, append(findings, integrity...)
+}
+
+func incomplete(source, step string, err error) Finding {
+	return Finding{source, CheckIncomplete, fmt.Sprintf("%s: %v", step, err)}
 }
 
 // floors holds the counts recorded at a source's last passing validation.
@@ -227,17 +238,21 @@ func countWhere(ctx context.Context, db *bun.DB, table, condition string) (int64
 	return rows, err
 }
 
-// record stores the outcome. Floors only move when the source passed.
+// record stores the outcome. Staleness is reported from the watermark, so it never sets
+// validation_error. Floors only move when the source passed every check.
 func record(ctx context.Context, db *bun.DB, source string, current counts, findings []Finding, now time.Time) error {
-	var validationError *string
-	if len(findings) > 0 {
-		messages := make([]string, len(findings))
-		for i, finding := range findings {
-			messages[i] = finding.Check + ": " + finding.Message
+	var messages []string
+	for _, finding := range findings {
+		if finding.Check != CheckFreshness {
+			messages = append(messages, finding.Check+": "+finding.Message)
 		}
+	}
+	var validationError *string
+	if len(messages) > 0 {
 		joined := strings.Join(messages, "; ")
 		validationError = &joined
 	}
+	passed := len(findings) == 0
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO knowledge_source_sync (source, validation_error) VALUES (?, ?)
 		ON CONFLICT (source) DO UPDATE SET
@@ -246,8 +261,8 @@ func record(ctx context.Context, db *bun.DB, source string, current counts, find
 			validated_malicious_count = CASE WHEN ? THEN ? ELSE knowledge_source_sync.validated_malicious_count END,
 			validated_at = CASE WHEN ? THEN ?::timestamptz ELSE knowledge_source_sync.validated_at END`,
 		source, validationError,
-		validationError == nil, current.rows,
-		validationError == nil, current.malicious,
-		validationError == nil, now)
+		passed, current.rows,
+		passed, current.malicious,
+		passed, now)
 	return err
 }

@@ -21,13 +21,18 @@ type refetchSource struct {
 // FullRefetch clears the NVD and GCVE watermarks, then fetches each source completely and reconciles it.
 // A source that fails keeps no watermark, so the next update repeats its full fetch.
 func FullRefetch(db *bun.DB, configDB *bun.DB) error {
-	if err := datedrestore.RefuseMarked(db); err != nil {
-		return err
-	}
-	return refetchSources(db, []refetchSource{
+	return fullRefetch(db, []refetchSource{
 		{knowledge_db.SourceNVD, func() error { return nvd.Update(db, configDB) }},
 		{knowledge_db.SourceGCVE, func() error { return gcve.Update(db, configDB) }},
 	})
+}
+
+// fullRefetch refuses a dated restore before touching any watermark.
+func fullRefetch(db *bun.DB, sources []refetchSource) error {
+	if err := datedrestore.RefuseMarked(db); err != nil {
+		return err
+	}
+	return refetchSources(db, sources)
 }
 
 func refetchSources(db *bun.DB, sources []refetchSource) error {

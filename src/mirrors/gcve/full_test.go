@@ -147,3 +147,58 @@ func TestLargeRemovalFailsWithoutRetiring(t *testing.T) {
 	}
 	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
 }
+
+func TestEnrichmentRetryRetiresRecordsAbsentFromTheDump(t *testing.T) {
+	db := setup(t, false)
+	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
+	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
+	upstream.serve(t)
+	serveEnrichment(t, http.StatusBadGateway, "")
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed enrichment should fail the source")
+	}
+	if got := retiredAs(t, db, "GCVE-0-GONE"); got != "" {
+		t.Fatalf("record retired before the import finished: %q", got)
+	}
+
+	serveEnrichment(t, http.StatusOK, enrichedRecord)
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := retiredAs(t, db, "GCVE-0-GONE"); got != knowledge.RetiredRemoved {
+		t.Errorf("absent record = %q, want removed", got)
+	}
+	if got := retiredAs(t, db, "GCVE-0-2026-1"); got != "" {
+		t.Errorf("record in the dump retired: %q", got)
+	}
+}
+
+func TestEnrichmentRetryStaysFailedWhenTheDumpCannotBeRead(t *testing.T) {
+	db := setup(t, false)
+	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
+	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
+	upstream.serve(t)
+	serveEnrichment(t, http.StatusBadGateway, "")
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed enrichment should fail the source")
+	}
+
+	serveEnrichment(t, http.StatusOK, enrichedRecord)
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(unavailable.Close)
+	bulkDumpURL = unavailable.URL
+	if err := Update(db, db); err == nil {
+		t.Fatal("a retry that cannot reconcile should fail the source")
+	}
+
+	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
+	if got := watermark(t, db); !got.IsZero() {
+		t.Errorf("watermark = %v, want none until the reconcile has happened", got)
+	}
+	if got := retiredAs(t, db, "GCVE-0-GONE"); got != "" {
+		t.Errorf("record retired without a reconcile: %q", got)
+	}
+}

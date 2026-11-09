@@ -34,6 +34,9 @@ var (
 	vulnerabilityAPI = "https://vulnerability.circl.lu/api/vulnerability/"
 )
 
+// stateRejected is the CVE record state of a rejected record.
+const stateRejected = "REJECTED"
+
 // windowRequestInterval keeps requests under the anonymous limit of 20 a minute.
 var windowRequestInterval = 3 * time.Second
 
@@ -79,8 +82,8 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 
 	switch {
 	case !bulkTime.IsZero():
-		log.Println("GCVE bulk import already done, retrying the vulnrichment import")
-		err = retryAfterBulk(db, bulkTime)
+		logger.WithFields(logrus.Fields{"source": knowledge.SourceGCVE, "bulk_completed_at": bulkTime.UTC().Format(time.RFC3339)}).Info("GCVE bulk import already done, retrying enrichment and reconcile")
+		err = retryAfterBulk(db, bulkTime, syncedAt)
 	case last.IsZero():
 		log.Println("No previous GCVE sync, performing full bulk import")
 		err = fullImport(db, syncedAt)
@@ -128,17 +131,25 @@ func fullImport(db *bun.DB, syncedAt time.Time) error {
 	return pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
-// retryAfterBulk finishes a full import whose enrichment failed.
-// The dump's ids are gone, so a full re-fetch is needed to reconcile.
-func retryAfterBulk(db *bun.DB, dumpTime time.Time) error {
-	if _, err := importVulnrichment(db); err != nil {
+// retryAfterBulk finishes a full import whose enrichment failed, enriching first because that is what failed.
+// It reads the dump again without storing it, to get the ids the reconcile needs.
+func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) error {
+	enriched, err := importVulnrichment(db)
+	if err != nil {
 		return fmt.Errorf("vulnrichment import: %w", err)
 	}
-	if _, err := catchUp(db, dumpTime); err != nil {
+	caughtUp, err := catchUp(db, dumpTime)
+	if err != nil {
 		return err
 	}
-	logger.Warn("GCVE full import finished without a reconcile; run the full re-fetch to retire removed records")
-	return nil
+	dumped, err := dumpRecordIDs(dumpTime)
+	if err != nil {
+		return fmt.Errorf("read dump for reconcile: %w", err)
+	}
+
+	snapshot := make([]string, 0, len(dumped)+len(enriched)+len(caughtUp))
+	snapshot = append(append(append(snapshot, dumped...), enriched...), caughtUp...)
+	return pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // catchUp applies the changes made since the dump was built.
@@ -183,30 +194,76 @@ func incrementalOrBulk(db *bun.DB, last, syncedAt time.Time) (time.Time, error) 
 // bulkImport downloads and stores the cvelistv5 dump, refusing one older than notBefore.
 // It returns the dump's date and the ids of all its records.
 func bulkImport(db *bun.DB, notBefore time.Time) (time.Time, []string, error) {
-	log.Println("Downloading cvelistv5 bulk dump...")
-
-	resp, err := httpClient.Get(bulkDumpURL)
+	logger.Info("Downloading cvelistv5 bulk dump")
+	body, dumpTime, err := openDump(notBefore)
 	if err != nil {
-		return time.Time{}, nil, fmt.Errorf("failed to download bulk dump: %w", err)
+		return time.Time{}, nil, err
 	}
-	defer resp.Body.Close()
+	defer body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return time.Time{}, nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-	dumpTime, err := http.ParseTime(resp.Header.Get("Last-Modified"))
-	if err != nil {
-		return time.Time{}, nil, fmt.Errorf("bulk dump has no usable Last-Modified: %w", err)
-	}
-	if dumpTime.Before(notBefore) {
-		return time.Time{}, nil, fmt.Errorf("bulk dump from %s is older than the watermark %s", dumpTime.Format(time.RFC3339), notBefore.Format(time.RFC3339))
-	}
-
-	ids, err := processNDJSONStream(db, resp.Body)
+	ids, err := processNDJSONStream(db, body)
 	if err != nil {
 		return time.Time{}, nil, err
 	}
 	return dumpTime, ids, nil
+}
+
+// openDump requests the cvelistv5 dump and checks its date is not older than notBefore.
+func openDump(notBefore time.Time) (io.ReadCloser, time.Time, error) {
+	resp, err := httpClient.Get(bulkDumpURL)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("failed to download bulk dump: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, time.Time{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	dumpTime, err := http.ParseTime(resp.Header.Get("Last-Modified"))
+	if err != nil {
+		resp.Body.Close()
+		return nil, time.Time{}, fmt.Errorf("bulk dump has no usable Last-Modified: %w", err)
+	}
+	if dumpTime.Before(notBefore) {
+		resp.Body.Close()
+		return nil, time.Time{}, fmt.Errorf("bulk dump from %s is older than the watermark %s", dumpTime.Format(time.RFC3339), notBefore.Format(time.RFC3339))
+	}
+	return resp.Body, dumpTime, nil
+}
+
+// dumpRecordIDs reads the id of every dump record without storing anything.
+func dumpRecordIDs(notBefore time.Time) ([]string, error) {
+	logger.Info("Reading cvelistv5 bulk dump for its record ids")
+	body, _, err := openDump(notBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	scanner := newRecordScanner(body)
+	var ids []string
+	parseErrors := 0
+	for scanner.Scan() {
+		if len(scanner.Bytes()) == 0 {
+			continue
+		}
+		item, err := parseCVERecord(scanner.Bytes())
+		if err != nil {
+			parseErrors++
+			continue
+		}
+		ids = append(ids, item.GCVEId)
+	}
+	if parseErrors > 0 {
+		return nil, fmt.Errorf("%d records could not be parsed", parseErrors)
+	}
+	return ids, scanner.Err()
+}
+
+// newRecordScanner reads NDJSON lines up to the longest record the dumps contain.
+func newRecordScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
+	return scanner
 }
 
 // importVulnrichment downloads and merges CISA ADP enrichment data.
@@ -229,8 +286,7 @@ func importVulnrichment(db *bun.DB) ([]string, error) {
 // processNDJSONStream reads an NDJSON stream line by line and processes in batches.
 // It returns the id of every record read, including rejected ones.
 func processNDJSONStream(db *bun.DB, reader io.Reader) ([]string, error) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
+	scanner := newRecordScanner(reader)
 
 	var batch []knowledge.GCVEItem
 	var failures []error
@@ -250,7 +306,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) ([]string, error) {
 			parseErrors++
 			continue
 		}
-		if item.State == "REJECTED" {
+		if item.State == stateRejected {
 			rejected++
 		}
 		ids = append(ids, item.GCVEId)
@@ -364,7 +420,7 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 	}
 
 	// Only the identity and dates of a rejected record are used.
-	if item.State == "REJECTED" {
+	if item.State == stateRejected {
 		return item, nil
 	}
 
@@ -520,7 +576,7 @@ func processBatch(db *bun.DB, items []knowledge.GCVEItem) error {
 	batch := make([]knowledge.GCVEItem, 0, len(items))
 	var rejected []knowledge.GCVEItem
 	for _, item := range items {
-		if item.State == "REJECTED" {
+		if item.State == stateRejected {
 			rejected = append(rejected, item)
 		} else {
 			batch = append(batch, item)
@@ -615,10 +671,8 @@ func extractPackageVulnerabilities(gcveItems []knowledge.GCVEItem, gcveIdToUUID 
 	return pkgVulns
 }
 
-// fetchWindow reads every cvelistv5 record updated since the given time. It moves
-// its cursor to the last date seen rather than a page number, so an update made
-// during the run cannot push an unread record into an earlier page. Records sharing
-// a date are read by paging within that date.
+// fetchWindow reads every cvelistv5 record updated since the given time, moving its
+// cursor by date so updates made during the run cannot hide an unread record.
 func fetchWindow(since time.Time) ([]json.RawMessage, error) {
 	log.Printf("GCVE incremental update since %s", since.Format(time.RFC3339))
 
