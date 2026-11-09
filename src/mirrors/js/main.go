@@ -167,7 +167,7 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 	var npmPackages []knowledge.Package
 	count, err := db.NewSelect().Column("name").Model(&npmPackages).Where("language = ?", "javascript").ScanAndCount(context.Background())
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("list npm packages: %w", err)
 	}
 
 	// Configure progression bar

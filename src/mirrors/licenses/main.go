@@ -4,10 +4,13 @@ package licenses
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 
@@ -18,24 +21,26 @@ import (
 // It fetches the licenses from a remote source and updates them in the graph.
 // Returns an error if there is a problem when fetching or updating licenses.
 func Update(db *bun.DB) error {
-	log.Println("Start updating Licenses metadata")
+	return sourcesync.Run(db, knowledge.SourceLicenses, func() (time.Time, error) {
+		log.Println("Start updating Licenses metadata")
+		syncedAt := time.Now()
 
-	// Get licenses
-	licenses, err := downloadLicenses()
-	if err != nil {
-		log.Print("Problem when fetching licenses")
-		return err
-	}
+		// Get licenses
+		licenses, err := downloadLicenses()
+		if err != nil {
+			log.Print("Problem when fetching licenses")
+			return time.Time{}, err
+		}
 
-	licenses = addCodeClarityInfo(licenses)
+		licenses = addCodeClarityInfo(licenses)
 
-	// Update licenses
-	err = pgsql.UpdateLicenses(db, licenses)
-	if err != nil {
-		log.Print("Problem when updating licenses")
-		return err
-	}
-	return nil
+		// Update licenses
+		if err := pgsql.UpdateLicenses(db, licenses); err != nil {
+			log.Print("Problem when updating licenses")
+			return time.Time{}, err
+		}
+		return syncedAt, nil
+	})
 }
 
 // downloadLicenses fetches licenses from a remote source and returns them as a slice of types.License.
@@ -49,6 +54,10 @@ func downloadLicenses() ([]knowledge.License, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
+	}
 
 	// Parse response body
 	var result knowledge.LicenseList
