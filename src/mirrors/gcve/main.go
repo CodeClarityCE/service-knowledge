@@ -11,7 +11,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,17 +21,33 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 )
 
+var logger = logrus.StandardLogger()
+
 // Upstream endpoints, replaceable in tests.
 var (
-	bulkDumpURL     = "https://vulnerability.circl.lu/dumps/cvelistv5.ndjson"
-	vulnrichmentURL = "https://vulnerability.circl.lu/dumps/vulnrichment.ndjson"
-	lastUpdatedAPI  = "https://vulnerability.circl.lu/api/last"
+	bulkDumpURL      = "https://vulnerability.circl.lu/dumps/cvelistv5.ndjson"
+	vulnrichmentURL  = "https://vulnerability.circl.lu/dumps/vulnrichment.ndjson"
+	vulnerabilityAPI = "https://vulnerability.circl.lu/api/vulnerability/"
 )
 
-const batchSize = 100
+// windowRequestInterval keeps requests under the anonymous limit of 20 a minute.
+var windowRequestInterval = 3 * time.Second
+
+const (
+	batchSize = 100
+	// windowPageSize is the largest page the API serves.
+	windowPageSize = 100
+	// windowOverlap re-reads recent records, because upstream can publish a change late.
+	windowOverlap = 24 * time.Hour
+	// maxWindowRequests stops a misbehaving API from keeping the run going forever.
+	maxWindowRequests = 5000
+	maxWindowRetries  = 5
+	userAgent         = "CodeClarity-knowledge (+https://github.com/CodeClarityCE)"
+)
 
 // httpClient is a shared HTTP client with timeouts for all GCVE requests.
 // Bulk downloads are ~4.7GB so the timeout must be generous.
@@ -61,11 +79,8 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 
 	switch {
 	case !bulkTime.IsZero():
-		log.Println("GCVE bulk import already done, retrying only the vulnrichment import")
-		syncedAt = bulkTime
-		if err = importVulnrichment(db); err != nil {
-			err = fmt.Errorf("vulnrichment import: %w", err)
-		}
+		log.Println("GCVE bulk import already done, retrying the vulnrichment import")
+		err = retryAfterBulk(db, bulkTime)
 	case last.IsZero():
 		log.Println("No previous GCVE sync, performing full bulk import")
 		err = fullImport(db, syncedAt)
@@ -73,7 +88,7 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		log.Println("GCVE data older than 30 days, performing full reimport")
 		err = fullImport(db, syncedAt)
 	default:
-		err = incrementalOrBulk(db, last)
+		syncedAt, err = incrementalOrBulk(db, last, syncedAt)
 	}
 	if err != nil {
 		return time.Time{}, err
@@ -89,76 +104,137 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	return syncedAt, nil
 }
 
-// fullImport loads the bulk dump and the enrichment dump. It records the bulk
-// import as done first, so a later run only has to retry the enrichment.
+// fullImport loads the dump, enriches it, catches up from the dump's date and reconciles.
+// It records the bulk import as done first, so a later run only has to retry the enrichment.
 func fullImport(db *bun.DB, syncedAt time.Time) error {
-	if err := bulkImport(db); err != nil {
+	dumpTime, ids, err := bulkImport(db, time.Time{})
+	if err != nil {
 		return fmt.Errorf("bulk import: %w", err)
 	}
-	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, syncedAt); err != nil {
+	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, dumpTime); err != nil {
 		return err
 	}
-	if err := importVulnrichment(db); err != nil {
+	enriched, err := importVulnrichment(db)
+	if err != nil {
 		return fmt.Errorf("vulnrichment import: %w", err)
 	}
+	caughtUp, err := catchUp(db, dumpTime)
+	if err != nil {
+		return err
+	}
+
+	snapshot := make([]string, 0, len(ids)+len(enriched)+len(caughtUp))
+	snapshot = append(append(append(snapshot, ids...), enriched...), caughtUp...)
+	return pgsql.ReconcileGcve(db, snapshot, syncedAt)
+}
+
+// retryAfterBulk finishes a full import whose enrichment failed.
+// The dump's ids are gone, so a full re-fetch is needed to reconcile.
+func retryAfterBulk(db *bun.DB, dumpTime time.Time) error {
+	if _, err := importVulnrichment(db); err != nil {
+		return fmt.Errorf("vulnrichment import: %w", err)
+	}
+	if _, err := catchUp(db, dumpTime); err != nil {
+		return err
+	}
+	logger.Warn("GCVE full import finished without a reconcile; run the full re-fetch to retire removed records")
 	return nil
 }
 
-// incrementalOrBulk uses the bulk dump only when the recent records cannot be fetched.
+// catchUp applies the changes made since the dump was built.
+func catchUp(db *bun.DB, dumpTime time.Time) ([]string, error) {
+	records, err := fetchWindow(dumpTime.Add(-windowOverlap))
+	if err != nil {
+		return nil, fmt.Errorf("catch up from dump: %w", err)
+	}
+	if err := storeRecentRecords(db, records); err != nil {
+		return nil, err
+	}
+	return recordGcveIds(records), nil
+}
+
+// recordGcveIds returns the ids of the records that parse.
+func recordGcveIds(records []json.RawMessage) []string {
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		if item, err := parseCVERecord(record); err == nil {
+			ids = append(ids, item.GCVEId)
+		}
+	}
+	return ids
+}
+
+// incrementalOrBulk reads the window since the last sync, overlapping it a little.
+// It returns the watermark: the run's start, or the dump's date after a fallback.
 // A bad record or failed batch fails the source without a bulk download.
-func incrementalOrBulk(db *bun.DB, last time.Time) error {
-	records, fetchErr := fetchRecentRecords(last)
+func incrementalOrBulk(db *bun.DB, last, syncedAt time.Time) (time.Time, error) {
+	records, fetchErr := fetchWindow(last.Add(-windowOverlap))
 	if fetchErr == nil {
-		return storeRecentRecords(db, records)
+		return syncedAt, storeRecentRecords(db, records)
 	}
 	log.Printf("GCVE incremental fetch failed, falling back to bulk import: %v", fetchErr)
-	if err := bulkImport(db); err != nil {
-		return errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
+	dumpTime, _, err := bulkImport(db, last)
+	if err != nil {
+		return time.Time{}, errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
 	}
-	return nil
+	return dumpTime, nil
 }
 
-// bulkImport downloads and processes the cvelistv5 NDJSON dump.
-func bulkImport(db *bun.DB) error {
+// bulkImport downloads and stores the cvelistv5 dump, refusing one older than notBefore.
+// It returns the dump's date and the ids of all its records.
+func bulkImport(db *bun.DB, notBefore time.Time) (time.Time, []string, error) {
 	log.Println("Downloading cvelistv5 bulk dump...")
 
 	resp, err := httpClient.Get(bulkDumpURL)
 	if err != nil {
-		return fmt.Errorf("failed to download bulk dump: %w", err)
+		return time.Time{}, nil, fmt.Errorf("failed to download bulk dump: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return time.Time{}, nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	dumpTime, err := http.ParseTime(resp.Header.Get("Last-Modified"))
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("bulk dump has no usable Last-Modified: %w", err)
+	}
+	if dumpTime.Before(notBefore) {
+		return time.Time{}, nil, fmt.Errorf("bulk dump from %s is older than the watermark %s", dumpTime.Format(time.RFC3339), notBefore.Format(time.RFC3339))
 	}
 
-	return processNDJSONStream(db, resp.Body)
+	ids, err := processNDJSONStream(db, resp.Body)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+	return dumpTime, ids, nil
 }
 
 // importVulnrichment downloads and merges CISA ADP enrichment data.
-func importVulnrichment(db *bun.DB) error {
+func importVulnrichment(db *bun.DB) ([]string, error) {
 	log.Println("Downloading vulnrichment dump...")
 
 	resp, err := httpClient.Get(vulnrichmentURL)
 	if err != nil {
-		return fmt.Errorf("failed to download vulnrichment dump: %w", err)
+		return nil, fmt.Errorf("failed to download vulnrichment dump: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	return processNDJSONStream(db, resp.Body)
 }
 
 // processNDJSONStream reads an NDJSON stream line by line and processes in batches.
-func processNDJSONStream(db *bun.DB, reader io.Reader) error {
+// It returns the id of every record read, including rejected ones.
+func processNDJSONStream(db *bun.DB, reader io.Reader) ([]string, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
 
 	var batch []knowledge.GCVEItem
 	var failures []error
+	var ids []string
 	totalProcessed := 0
 	parseErrors := 0
 	rejected := 0
@@ -177,6 +253,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 		if item.State == "REJECTED" {
 			rejected++
 		}
+		ids = append(ids, item.GCVEId)
 
 		batch = append(batch, *item)
 
@@ -208,7 +285,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 		failures = append(failures, fmt.Errorf("%d records could not be parsed", parseErrors))
 	}
 	failures = append(failures, scanner.Err())
-	return errors.Join(failures...)
+	return ids, errors.Join(failures...)
 }
 
 // CVERecordRaw represents the raw JSON structure from the NDJSON dump.
@@ -270,6 +347,10 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 	var raw CVERecordRaw
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
+	}
+
+	if raw.CveMetadata.CveId == "" {
+		return nil, errors.New("record has no CVE id")
 	}
 
 	item := &knowledge.GCVEItem{
@@ -534,41 +615,114 @@ func extractPackageVulnerabilities(gcveItems []knowledge.GCVEItem, gcveIdToUUID 
 	return pkgVulns
 }
 
-// fetchRecentRecords fetches recently modified vulnerabilities via the API.
-func fetchRecentRecords(since time.Time) ([]json.RawMessage, error) {
+// fetchWindow reads every cvelistv5 record updated since the given time. It moves
+// its cursor to the last date seen rather than a page number, so an update made
+// during the run cannot push an unread record into an earlier page. Records sharing
+// a date are read by paging within that date.
+func fetchWindow(since time.Time) ([]json.RawMessage, error) {
 	log.Printf("GCVE incremental update since %s", since.Format(time.RFC3339))
 
-	apiKey := os.Getenv("VULNERABILITY_LOOKUP_API_KEY")
-
-	req, err := http.NewRequest("GET", lastUpdatedAPI, nil)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != "" && apiKey != "!ChangeMe!" {
-		req.Header.Set("X-API-KEY", apiKey)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// The /api/last endpoint returns an array of vulnerability records
+	seen := make(map[string]struct{})
 	var records []json.RawMessage
-	if err := json.Unmarshal(body, &records); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	cursor := since.UTC()
+	page := 1
+	for requests := 0; requests < maxWindowRequests; requests++ {
+		body, err := fetchWindowPage(cursor, page)
+		if err != nil {
+			return nil, err
+		}
+		var pageRecords []json.RawMessage
+		if err := json.Unmarshal(body, &pageRecords); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		fresh := 0
+		next := cursor
+		for i, record := range pageRecords {
+			var meta struct {
+				CveMetadata struct {
+					CveId       string `json:"cveId"`
+					DateUpdated string `json:"dateUpdated"`
+				} `json:"cveMetadata"`
+			}
+			if err := json.Unmarshal(record, &meta); err != nil || meta.CveMetadata.CveId == "" {
+				records = append(records, record)
+				continue
+			}
+			id := meta.CveMetadata.CveId
+			if _, known := seen[id]; !known {
+				seen[id] = struct{}{}
+				records = append(records, record)
+				fresh++
+			}
+			updated, err := time.Parse(time.RFC3339Nano, meta.CveMetadata.DateUpdated)
+			if err != nil {
+				continue
+			}
+			if i == 0 && updated.Before(cursor) {
+				return nil, fmt.Errorf("upstream ignored the window: record %s is dated %s, before %s", id, meta.CveMetadata.DateUpdated, cursor.Format(time.RFC3339))
+			}
+			if updated.After(next) {
+				next = updated
+			}
+		}
+
+		if fresh == 0 && len(pageRecords) < windowPageSize {
+			return records, nil
+		}
+		if next.After(cursor) {
+			cursor = next
+			page = 1
+		} else {
+			page++
+		}
+		time.Sleep(windowRequestInterval)
 	}
-	return records, nil
+	return nil, fmt.Errorf("window not finished after %d requests", maxWindowRequests)
+}
+
+// fetchWindowPage requests one page in ascending update order, waiting out rate limits.
+func fetchWindowPage(since time.Time, page int) ([]byte, error) {
+	query := url.Values{}
+	query.Set("source", "cvelistv5")
+	query.Set("since", since.Format("2006-01-02T15:04:05.000Z"))
+	query.Set("date_sort", "updated")
+	query.Set("sort_order", "asc")
+	query.Set("per_page", strconv.Itoa(windowPageSize))
+	query.Set("page", strconv.Itoa(page))
+
+	apiKey := os.Getenv("VULNERABILITY_LOOKUP_API_KEY")
+	for attempt := 0; attempt < maxWindowRetries; attempt++ {
+		req, err := http.NewRequest("GET", vulnerabilityAPI+"?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", userAgent)
+		if apiKey != "" && apiKey != "!ChangeMe!" {
+			req.Header.Set("X-API-KEY", apiKey)
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch window: %w", err)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			delay, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+			resp.Body.Close()
+			time.Sleep(time.Duration(delay) * time.Second)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", readErr)
+		}
+		return body, nil
+	}
+	return nil, fmt.Errorf("rate limited after %d attempts", maxWindowRetries)
 }
 
 // storeRecentRecords stores the fetched records and reports every record and batch failure.
