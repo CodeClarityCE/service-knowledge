@@ -97,6 +97,33 @@ func SetWatermark(db *bun.DB, source string, watermark time.Time) error {
 	return nil
 }
 
+// BulkCompletedAt returns the time a finished bulk import is current to while
+// its enrichment is pending, or the zero time if none is pending.
+func BulkCompletedAt(db *bun.DB, source string) (time.Time, error) {
+	var completedAt sql.NullTime
+	err := db.NewSelect().
+		Table("knowledge_source_sync").
+		Column("bulk_completed_at").
+		Where("source = ?", source).
+		Scan(context.Background(), &completedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, fmt.Errorf("read %s bulk completion: %w", source, err)
+	}
+	return completedAt.Time, nil
+}
+
+// SetBulkCompletedAt records only that a bulk import is done and enrichment is pending.
+func SetBulkCompletedAt(db *bun.DB, source string, completedAt time.Time) error {
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO knowledge_source_sync (source, bulk_completed_at) VALUES (?, ?)
+		ON CONFLICT (source) DO UPDATE SET bulk_completed_at = EXCLUDED.bulk_completed_at`,
+		source, completedAt)
+	if err != nil {
+		return fmt.Errorf("write %s bulk completion: %w", source, err)
+	}
+	return nil
+}
+
 // SetConfigLast writes one *_last column, so it cannot overwrite the other sources' columns.
 func SetConfigLast(configDB *bun.DB, column string, syncedAt time.Time) error {
 	result, err := configDB.NewUpdate().
@@ -150,9 +177,10 @@ func markFinished(ctx context.Context, db *bun.DB, source string, watermark time
 			last_run_finished_at = ?,
 			last_outcome = ?,
 			last_error = ?,
-			row_count = COALESCE(?, row_count)
+			row_count = COALESCE(?, row_count),
+			bulk_completed_at = CASE WHEN ? THEN NULL ELSE bulk_completed_at END
 		WHERE source = ?`,
-		newWatermark, time.Now(), outcome, lastError, rows, source)
+		newWatermark, time.Now(), outcome, lastError, rows, syncErr == nil, source)
 	return err
 }
 

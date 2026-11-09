@@ -25,7 +25,8 @@ CREATE TABLE knowledge_source_sync (
 	last_run_finished_at timestamptz,
 	last_outcome character varying CHECK (last_outcome IN ('success', 'failure')),
 	last_error text,
-	row_count bigint NOT NULL DEFAULT 0
+	row_count bigint NOT NULL DEFAULT 0,
+	bulk_completed_at timestamptz
 )`
 
 // SetupSyncTestDB opens a fresh schema in the throwaway database named by
@@ -112,8 +113,8 @@ func SeedWatermark(t *testing.T, db *bun.DB, source string, watermark time.Time)
 	}
 }
 
-// AssertFailedWithWatermark checks that source failed and its watermark is still want.
-func AssertFailedWithWatermark(t *testing.T, db *bun.DB, source string, want time.Time) {
+// AssertFailed checks that source's last run is recorded as a failure.
+func AssertFailed(t *testing.T, db *bun.DB, source string) {
 	t.Helper()
 	row := readSync(t, db, source)
 	if row.LastOutcome == nil || *row.LastOutcome != knowledge.SourceSyncFailure {
@@ -122,6 +123,13 @@ func AssertFailedWithWatermark(t *testing.T, db *bun.DB, source string, want tim
 	if row.LastError == nil || *row.LastError == "" {
 		t.Error("last_error should describe the failure")
 	}
+}
+
+// AssertFailedWithWatermark checks that source failed and its watermark is still want.
+func AssertFailedWithWatermark(t *testing.T, db *bun.DB, source string, want time.Time) {
+	t.Helper()
+	AssertFailed(t, db, source)
+	row := readSync(t, db, source)
 	if row.Watermark == nil || !row.Watermark.Equal(want) {
 		t.Errorf("watermark = %v, want unchanged %v", row.Watermark, want)
 	}

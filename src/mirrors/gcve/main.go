@@ -49,6 +49,10 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	log.Println("Start updating GCVE/vulnerability-lookup")
 
+	bulkTime, err := sourcesync.BulkCompletedAt(db, knowledge.SourceGCVE)
+	if err != nil {
+		return time.Time{}, err
+	}
 	last, err := sourcesync.Watermark(db, knowledge.SourceGCVE)
 	if err != nil {
 		return time.Time{}, err
@@ -56,12 +60,18 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	syncedAt := time.Now()
 
 	switch {
+	case !bulkTime.IsZero():
+		log.Println("GCVE bulk import already done, retrying only the vulnrichment import")
+		syncedAt = bulkTime
+		if err = importVulnrichment(db); err != nil {
+			err = fmt.Errorf("vulnrichment import: %w", err)
+		}
 	case last.IsZero():
 		log.Println("No previous GCVE sync, performing full bulk import")
-		err = fullImport(db)
+		err = fullImport(db, syncedAt)
 	case time.Since(last).Hours() > 24*30:
 		log.Println("GCVE data older than 30 days, performing full reimport")
-		err = fullImport(db)
+		err = fullImport(db, syncedAt)
 	default:
 		err = incrementalOrBulk(db, last)
 	}
@@ -75,10 +85,14 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	return syncedAt, nil
 }
 
-// fullImport loads the bulk dump and the enrichment dump.
-func fullImport(db *bun.DB) error {
+// fullImport loads the bulk dump and the enrichment dump. It records the bulk
+// import as done first, so a later run only has to retry the enrichment.
+func fullImport(db *bun.DB, syncedAt time.Time) error {
 	if err := bulkImport(db); err != nil {
 		return fmt.Errorf("bulk import: %w", err)
+	}
+	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, syncedAt); err != nil {
+		return err
 	}
 	if err := importVulnrichment(db); err != nil {
 		return fmt.Errorf("vulnrichment import: %w", err)
