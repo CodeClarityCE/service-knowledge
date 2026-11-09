@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,4 +143,22 @@ func TestHeaderOnlyFileRemovesNothing(t *testing.T) {
 		t.Fatal("a file with no scores should fail the source")
 	}
 	assertUntouched(t, db)
+}
+
+func TestDatedImportKeepsCVEsAbsentFromThatFile(t *testing.T) {
+	db := setup(t, http.StatusOK, gzipped(t, header+"CVE-2024-1,0.5,0.9\n"))
+	var values []string
+	for i := range 40 {
+		values = append(values, fmt.Sprintf("('CVE-2024-%d')", i+100))
+	}
+	if _, err := db.Exec("INSERT INTO epss (cve) VALUES " + strings.Join(values, ",")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UpdateAsOf(db, "2024-01-01"); err != nil {
+		t.Fatalf("a dated file should not trip the removal guard: %v", err)
+	}
+	if got := storedCVEs(t, db); len(got) != 41 {
+		t.Errorf("stored %d CVEs, want the 40 newer ones kept plus the dated one", len(got))
+	}
 }
