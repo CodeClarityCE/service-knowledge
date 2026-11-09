@@ -26,7 +26,19 @@ CREATE TABLE knowledge_source_sync (
 	last_outcome character varying CHECK (last_outcome IN ('success', 'failure')),
 	last_error text,
 	row_count bigint NOT NULL DEFAULT 0,
-	bulk_completed_at timestamptz
+	bulk_completed_at timestamptz,
+	validated_row_count bigint,
+	validated_malicious_count bigint,
+	validated_at timestamptz,
+	validation_error text
+)`
+
+// datedRestoreDDL matches the AddKnowledgeValidation API migration.
+const datedRestoreDDL = `
+CREATE TABLE knowledge_dated_restore (
+	id boolean PRIMARY KEY DEFAULT true CHECK (id),
+	label character varying NOT NULL,
+	marked_at timestamptz NOT NULL DEFAULT now()
 )`
 
 // SetupSyncTestDB opens a fresh schema in the throwaway database named by
@@ -58,6 +70,7 @@ func SetupSyncTestDB(t *testing.T) *bun.DB {
 		// Models default their ids to this function.
 		`CREATE FUNCTION uuid_generate_v4() RETURNS uuid AS 'SELECT gen_random_uuid()' LANGUAGE SQL`,
 		sourceSyncDDL,
+		datedRestoreDDL,
 		`CREATE TABLE config (
 			id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
 			nvd_last timestamptz, npm_last text, gcve_last timestamptz, osv_last timestamptz

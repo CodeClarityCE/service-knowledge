@@ -3,9 +3,11 @@ package knowledge
 import (
 	"fmt"
 
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
+	"github.com/CodeClarityCE/service-knowledge/src/validation"
 	knowledge_db "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
@@ -19,6 +21,9 @@ type refetchSource struct {
 // FullRefetch clears the NVD and GCVE watermarks, then fetches each source completely and reconciles it.
 // A source that fails keeps no watermark, so the next update repeats its full fetch.
 func FullRefetch(db *bun.DB, configDB *bun.DB) error {
+	if err := datedrestore.RefuseMarked(db); err != nil {
+		return err
+	}
 	return refetchSources(db, []refetchSource{
 		{knowledge_db.SourceNVD, func() error { return nvd.Update(db, configDB) }},
 		{knowledge_db.SourceGCVE, func() error { return gcve.Update(db, configDB) }},
@@ -32,7 +37,11 @@ func refetchSources(db *bun.DB, sources []refetchSource) error {
 			if err := sourcesync.ResetWatermark(db, source.source); err != nil {
 				return fmt.Errorf("%s: %w", source.source, err)
 			}
-			return source.sync()
+			if err := source.sync(); err != nil {
+				return err
+			}
+			// A completed re-fetch is a reviewed reset, so the next validation sets a new floor.
+			return validation.ResetRowFloors(db, source.source)
 		})
 	}
 	return runAll(steps)
