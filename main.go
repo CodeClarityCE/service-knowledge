@@ -65,7 +65,7 @@ func main() {
 		}
 		defer knowledgeService.Close()
 
-		err = withUpdateLock(knowledgeService, func() error {
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
 			return knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
 		})
 		if err != nil {
@@ -81,7 +81,7 @@ func main() {
 		}
 		defer knowledgeService.Close()
 
-		err = withUpdateLock(knowledgeService, func() error {
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
 			return osv.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 		})
 		if err != nil {
@@ -113,7 +113,7 @@ func main() {
 		}
 		defer knowledgeService.Close()
 
-		err = withUpdateLock(knowledgeService, func() error {
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
 			if err := osv_asof.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, advisoryRepo, asofTime, checkoutTime); err != nil {
 				return fmt.Errorf("import as-of OSV advisories: %w", err)
 			}
@@ -140,7 +140,7 @@ func main() {
 		}
 		defer knowledgeService.Close()
 
-		err = withUpdateLock(knowledgeService, func() error {
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
 			if err := osv_asof.Filter(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, asofTime); err != nil {
 				return fmt.Errorf("filter OSV advisories: %w", err)
 			}
@@ -154,11 +154,6 @@ func main() {
 		flag.Usage()
 		os.Exit(0)
 	}
-}
-
-// withUpdateLock runs a CLI update, refusing to overlap with any other knowledge update.
-func withUpdateLock(service *KnowledgeService, run func() error) error {
-	return knowledge.WithUpdateLock(context.Background(), service.DB.Knowledge, run)
 }
 
 // importDatedEPSS imports the dated EPSS snapshot when one was requested.

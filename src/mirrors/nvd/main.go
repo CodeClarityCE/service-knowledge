@@ -1,7 +1,6 @@
 package nvd
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,31 +31,15 @@ type Config struct {
 	Last string `json:"last"`
 }
 
-// setLastNVDChangeNumber writes only nvd_last, so it cannot overwrite the other sources' columns.
-func setLastNVDChangeNumber(db_config *bun.DB, syncedAt time.Time) error {
-	result, err := db_config.NewUpdate().
-		Table("config").
-		Set("nvd_last = ?", syncedAt).
-		Where("id = (SELECT id FROM config LIMIT 1)").
-		Exec(context.Background())
-	if err != nil {
-		return fmt.Errorf("write nvd_last: %w", err)
-	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return fmt.Errorf("no config found")
-	}
-	return nil
-}
-
 // Update syncs CVEs modified since the NVD watermark, in windows of at most 120 days.
-// The watermark moves past a window only after all of its pages succeeded.
+// The watermark moves only after every window succeeded.
 func Update(db *bun.DB, db_config *bun.DB) error {
 	return sourcesync.Run(db, knowledge.SourceNVD, func() (time.Time, error) {
 		return syncWindows(db, db_config)
 	})
 }
 
-// syncWindows returns the end of the last window that completed, even when a later one failed.
+// syncWindows returns the end of the last window, or the zero time if any window failed.
 func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	log.Println("Start updating NVD")
 
@@ -92,24 +75,22 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		}
 	}()
 
-	var synced time.Time
 	for {
 		end := time.Now().UTC()
-		more := time.Since(since).Hours() > 24*120
-		if more {
+		hasLaterWindow := time.Since(since).Hours() > 24*120
+		if hasLaterWindow {
 			log.Println("lastModStartDate is older than 120 days compared to current date")
 			end = since.AddDate(0, 0, 120)
 		}
 
 		if err := syncWindow(db, since, end, apiKey, rateLimiter); err != nil {
-			return synced, err
+			return time.Time{}, err
 		}
-		if err := setLastNVDChangeNumber(db_config, end); err != nil {
-			return synced, err
-		}
-		synced = end
-		if !more {
-			return synced, nil
+		if !hasLaterWindow {
+			if err := sourcesync.SetConfigLast(db_config, "nvd_last", end); err != nil {
+				return time.Time{}, err
+			}
+			return end, nil
 		}
 		since = end
 	}

@@ -20,15 +20,20 @@ const maxStoredErrorLength = 4000
 
 var defaultLogOutput = os.Stderr
 
-var logger = &logrus.Logger{
-	Out:       defaultLogOutput,
-	Formatter: &logrus.JSONFormatter{},
-	Hooks:     make(logrus.LevelHooks),
-	Level:     logrus.InfoLevel,
+var logger = NewLogger()
+
+// NewLogger returns a logger that writes structured JSON to stderr.
+func NewLogger() *logrus.Logger {
+	return &logrus.Logger{
+		Out:       defaultLogOutput,
+		Formatter: &logrus.JSONFormatter{},
+		Hooks:     make(logrus.LevelHooks),
+		Level:     logrus.InfoLevel,
+	}
 }
 
 // Sync does one source's work. It returns the point the source is now completely
-// synchronized up to, or the zero time if that point did not move.
+// synchronized up to. Run ignores that point when the sync also returns an error.
 type Sync func() (time.Time, error)
 
 // Run performs sync and records its outcome. The returned error is non-nil if
@@ -43,6 +48,9 @@ func Run(db *bun.DB, source string, sync Sync) error {
 	}
 
 	watermark, syncErr := runRecovering(sync)
+	if syncErr != nil {
+		watermark = time.Time{}
+	}
 
 	rows, countErr := countRows(ctx, db, source)
 	if countErr != nil {
@@ -75,6 +83,34 @@ func Watermark(db *bun.DB, source string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return *row.Watermark, nil
+}
+
+// SetWatermark sets only the source's watermark, creating its row if needed.
+func SetWatermark(db *bun.DB, source string, watermark time.Time) error {
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO knowledge_source_sync (source, watermark) VALUES (?, ?)
+		ON CONFLICT (source) DO UPDATE SET watermark = EXCLUDED.watermark`,
+		source, watermark)
+	if err != nil {
+		return fmt.Errorf("write %s watermark: %w", source, err)
+	}
+	return nil
+}
+
+// SetConfigLast writes one *_last column, so it cannot overwrite the other sources' columns.
+func SetConfigLast(configDB *bun.DB, column string, syncedAt time.Time) error {
+	result, err := configDB.NewUpdate().
+		Table("config").
+		Set("? = ?", bun.Ident(column), syncedAt).
+		Where("id = (SELECT id FROM config LIMIT 1)").
+		Exec(context.Background())
+	if err != nil {
+		return fmt.Errorf("write %s: %w", column, err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return fmt.Errorf("no config found")
+	}
+	return nil
 }
 
 // runRecovering turns a panic in sync into an error so later sources still run.

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
@@ -39,7 +40,7 @@ type loadStats struct {
 // checkout is expected to already be at the dated commit; asof is used for
 // logging and as a defensive filter that skips advisories published after the
 // asof day (a correctly dated checkout makes this a no-op). checkoutDate (the
-// commit date of the checkout) is stamped as osv_last on the config database.
+// commit date of the checkout) is stamped as osv_last and as the OSV watermark.
 func Update(db *bun.DB, configDB *bun.DB, checkoutDir string, asof time.Time, checkoutDate time.Time) error {
 	dir := filepath.Join(checkoutDir, "advisories", "github-reviewed")
 	log.Printf("Start importing OSV vulnerabilities as of %s from %s", asof.Format("2006-01-02"), dir)
@@ -55,7 +56,15 @@ func Update(db *bun.DB, configDB *bun.DB, checkoutDir string, asof time.Time, ch
 		return err
 	}
 
-	return osv.SetLastOSVSync(configDB, checkoutDate)
+	return stampOSVSync(db, configDB, checkoutDate)
+}
+
+// stampOSVSync records the data's date in both config.osv_last and the OSV watermark.
+func stampOSVSync(db *bun.DB, configDB *bun.DB, at time.Time) error {
+	if err := osv.SetLastOSVSync(configDB, at); err != nil {
+		return err
+	}
+	return sourcesync.SetWatermark(db, knowledge.SourceOSV, at)
 }
 
 // loadAdvisories walks dir for advisory JSON files, transforms them with the

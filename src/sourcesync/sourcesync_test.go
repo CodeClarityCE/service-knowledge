@@ -88,7 +88,7 @@ func TestFailedRunKeepsWatermarkAndRecordsError(t *testing.T) {
 	}
 }
 
-func TestFailedRunRecordsCompletedProgress(t *testing.T) {
+func TestFailedRunIgnoresCompletedProgress(t *testing.T) {
 	db := testhelper.SetupSyncTestDB(t)
 	seed(t, db)
 	window := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
@@ -96,8 +96,8 @@ func TestFailedRunRecordsCompletedProgress(t *testing.T) {
 	_ = Run(db, knowledge.SourceEPSS, func() (time.Time, error) { return window, errors.New("next window failed") })
 
 	row := read(t, db, knowledge.SourceEPSS)
-	if !row.Watermark.Equal(window) {
-		t.Errorf("watermark = %v, want completed window %v", row.Watermark, window)
+	if !row.Watermark.Equal(previousWatermark) {
+		t.Errorf("watermark = %v, want unchanged %v", row.Watermark, previousWatermark)
 	}
 	if *row.LastOutcome != knowledge.SourceSyncFailure {
 		t.Errorf("outcome = %v", *row.LastOutcome)

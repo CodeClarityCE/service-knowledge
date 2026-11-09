@@ -5,7 +5,6 @@ package gcve
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,7 +69,7 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	if err := setLastGCVESync(db_config, syncedAt); err != nil {
+	if err := sourcesync.SetConfigLast(db_config, "gcve_last", syncedAt); err != nil {
 		return time.Time{}, err
 	}
 	return syncedAt, nil
@@ -87,31 +86,16 @@ func fullImport(db *bun.DB) error {
 	return nil
 }
 
-// incrementalOrBulk falls back to the bulk dump when the incremental update fails.
+// incrementalOrBulk uses the bulk dump only when the recent records cannot be fetched.
+// A bad record or failed batch fails the source without a bulk download.
 func incrementalOrBulk(db *bun.DB, last time.Time) error {
-	incrementalErr := incrementalUpdate(db, last)
-	if incrementalErr == nil {
-		return nil
+	records, fetchErr := fetchRecentRecords(last)
+	if fetchErr == nil {
+		return storeRecentRecords(db, records)
 	}
-	log.Printf("GCVE incremental update failed, falling back to bulk import: %v", incrementalErr)
+	log.Printf("GCVE incremental fetch failed, falling back to bulk import: %v", fetchErr)
 	if err := bulkImport(db); err != nil {
-		return errors.Join(fmt.Errorf("incremental update: %w", incrementalErr), fmt.Errorf("fallback bulk import: %w", err))
-	}
-	return nil
-}
-
-// setLastGCVESync writes only gcve_last, so it cannot overwrite the other sources' columns.
-func setLastGCVESync(db_config *bun.DB, syncedAt time.Time) error {
-	result, err := db_config.NewUpdate().
-		Table("config").
-		Set("gcve_last = ?", syncedAt).
-		Where("id = (SELECT id FROM config LIMIT 1)").
-		Exec(context.Background())
-	if err != nil {
-		return fmt.Errorf("write gcve_last: %w", err)
-	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return fmt.Errorf("no config found")
+		return errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
 	}
 	return nil
 }
@@ -518,15 +502,15 @@ func extractPackageVulnerabilities(gcveItems []knowledge.GCVEItem, gcveIdToUUID 
 	return pkgVulns
 }
 
-// incrementalUpdate fetches recently modified vulnerabilities via the API.
-func incrementalUpdate(db *bun.DB, since time.Time) error {
+// fetchRecentRecords fetches recently modified vulnerabilities via the API.
+func fetchRecentRecords(since time.Time) ([]json.RawMessage, error) {
 	log.Printf("GCVE incremental update since %s", since.Format(time.RFC3339))
 
 	apiKey := os.Getenv("VULNERABILITY_LOOKUP_API_KEY")
 
 	req, err := http.NewRequest("GET", lastUpdatedAPI, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if apiKey != "" && apiKey != "!ChangeMe!" {
 		req.Header.Set("X-API-KEY", apiKey)
@@ -534,25 +518,29 @@ func incrementalUpdate(db *bun.DB, since time.Time) error {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
+		return nil, fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// The /api/last endpoint returns an array of vulnerability records
 	var records []json.RawMessage
 	if err := json.Unmarshal(body, &records); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+	return records, nil
+}
 
+// storeRecentRecords stores the fetched records and reports every record and batch failure.
+func storeRecentRecords(db *bun.DB, records []json.RawMessage) error {
 	var batch []knowledge.GCVEItem
 	var failures []error
 	processed := 0
