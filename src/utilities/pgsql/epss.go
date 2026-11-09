@@ -2,67 +2,43 @@ package pgsql
 
 import (
 	"context"
+	"fmt"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
 
-// UpdateCWE updates the CWE (Common Weakness Enumeration) entries in the graph database.
-// It takes a graph driver and a slice of CWEEntry structs as input.
-// For each CWEEntry in the slice, it tries to update the corresponding document in the "CWE" vertex collection.
-// If the document exists and is successfully updated, it generates a changelog and creates a new document in the "REVISIONS" vertex collection.
-// If the document doesn't exist, it creates a new document in the "CWE" vertex collection.
-// Returns an error if any operation fails.
+// epssChunkSize bounds one upsert statement.
+const epssChunkSize = 5000
+
+// UpdateEPSS upserts scores on cve in one transaction, keeping the last copy of a repeated CVE.
 func UpdateEPSS(db *bun.DB, epssScores []knowledge.EPSS) error {
+	byCVE := make(map[string]int, len(epssScores))
+	unique := make([]knowledge.EPSS, 0, len(epssScores))
+	for _, score := range epssScores {
+		if index, repeated := byCVE[score.CVE]; repeated {
+			unique[index] = score
+			continue
+		}
+		byCVE[score.CVE] = len(unique)
+		unique = append(unique, score)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+
 	ctx := context.Background()
-
-	toInsert := []knowledge.EPSS{}
-	toUpdate := []knowledge.EPSS{}
-
-	// Create a map to track existing CVEs in the database
-	existingCVEs := make(map[string]bool)
-
-	// Fetch all existing CVEs in one query
-	var dbCVEs []string
-	err := db.NewSelect().Model((*knowledge.EPSS)(nil)).Column("cve").Scan(ctx, &dbCVEs)
-	if err != nil {
-		return err
-	}
-
-	// Populate the map with existing CVEs
-	for _, cve := range dbCVEs {
-		existingCVEs[cve] = true
-	}
-
-	// Separate records into insert and update lists
-	for _, epss := range epssScores {
-		if existingCVEs[epss.CVE] {
-			toUpdate = append(toUpdate, epss)
-		} else {
-			toInsert = append(toInsert, epss)
+	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		for start := 0; start < len(unique); start += epssChunkSize {
+			chunk := unique[start:min(start+epssChunkSize, len(unique))]
+			_, err := tx.NewInsert().
+				Model(&chunk).
+				On("CONFLICT (cve) DO UPDATE SET score = EXCLUDED.score, percentile = EXCLUDED.percentile, score_date = EXCLUDED.score_date").
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("upsert %d EPSS scores: %w", len(chunk), err)
+			}
 		}
-	}
-
-	// Bulk insert
-	if len(toInsert) > 0 {
-		_, err := db.NewInsert().Model(&toInsert).Exec(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	if len(toUpdate) > 0 {
-		// Bulk update
-		_, err := db.NewUpdate().
-			Model(&toUpdate).
-			Table("epss").
-			Where("epss.cve = _data.cve").
-			Bulk().
-			Exec(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+		return nil
+	})
 }

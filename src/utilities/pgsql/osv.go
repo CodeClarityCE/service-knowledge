@@ -13,6 +13,9 @@ import (
 // UpdateOsv updates or inserts an OSV document using an efficient upsert operation.
 // This replaces the inefficient check-then-act pattern with a single atomic operation.
 func UpdateOsv(db *bun.DB, osv knowledge.OSVItem) error {
+	items := []knowledge.OSVItem{osv}
+	normalizeOsvDates(items)
+	osv = items[0]
 	ctx := context.Background()
 
 	// Use upsert (INSERT ... ON CONFLICT) for better performance and atomicity
@@ -35,6 +38,7 @@ func BatchUpdateOsv(db *bun.DB, osvItems []knowledge.OSVItem) error {
 		return nil
 	}
 
+	normalizeOsvDates(osvItems)
 	ctx := context.Background()
 
 	// Start a transaction for better performance and consistency

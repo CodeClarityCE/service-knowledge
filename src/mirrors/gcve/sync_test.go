@@ -316,3 +316,35 @@ func TestBulkParseErrorIsNotBulkDone(t *testing.T) {
 		t.Errorf("bulk downloads = %d, want a fresh download each run", got)
 	}
 }
+
+func TestRejectedRecordRetiresStoredRowAndDropsLinks(t *testing.T) {
+	db := setup(t, true)
+	if err := processBatch(db, []knowledge.GCVEItem{{GCVEId: "GCVE-0-2026-0002", CVEId: "CVE-2026-0002", State: "PUBLISHED",
+		Affected:          []knowledge.GCVEAffected{{Vendor: "v", Product: "p"}},
+		AffectedFlattened: []knowledge.GCVEProduct{{Vendor: "v", Product: "p"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := parseCVERecord([]byte(`{"cveMetadata":{"cveId":"CVE-2026-0002","state":"REJECTED","dateUpdated":"2026-01-02T03:04:05"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := processBatch(db, []knowledge.GCVEItem{*rejected}); err != nil {
+		t.Fatal(err)
+	}
+
+	var item knowledge.GCVEItem
+	if err := db.NewSelect().Model(&item).Where("gcve_id = ?", "GCVE-0-2026-0002").Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if item.RetiredReason != knowledge.RetiredRejected || item.RetiredAt.Format(time.RFC3339) != "2026-01-02T03:04:05Z" {
+		t.Errorf("got %q at %s", item.RetiredReason, item.RetiredAt)
+	}
+	if item.State != "PUBLISHED" {
+		t.Errorf("State = %q, want PUBLISHED", item.State)
+	}
+	var links int
+	if err := db.NewRaw("SELECT count(*) FROM package_vulnerability WHERE gcve_id = ?", item.Id).Scan(context.Background(), &links); err != nil || links != 0 {
+		t.Errorf("links = %d, err %v, want none", links, err)
+	}
+}

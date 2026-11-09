@@ -39,16 +39,27 @@ func Update(db *bun.DB) error {
 			log.Print("Problem when updating licenses")
 			return time.Time{}, err
 		}
+
+		ids := make([]string, len(licenses))
+		for i, license := range licenses {
+			ids[i] = license.LicenseID
+		}
+		if err := pgsql.ReconcileLicenses(db, ids); err != nil {
+			return time.Time{}, err
+		}
 		return syncedAt, nil
 	})
 }
+
+// licensesURL is the current SPDX license list.
+var licensesURL = "https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json"
 
 // downloadLicenses fetches licenses from a remote source and returns them as a slice of types.License.
 // It makes an HTTP GET request to the specified URL and parses the response body as JSON.
 // Returns the licenses and an error if there is a problem when fetching or parsing the licenses.
 func downloadLicenses() ([]knowledge.License, error) {
 	// Get licenses from remote source
-	resp, err := http.Get("https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json")
+	resp, err := http.Get(licensesURL)
 	if err != nil {
 		log.Println("No response from request")
 		return nil, err
@@ -72,6 +83,10 @@ func downloadLicenses() ([]knowledge.License, error) {
 	if err != nil {
 		log.Println(err)
 		return nil, err
+	}
+
+	if len(result.Licenses) == 0 {
+		return nil, fmt.Errorf("SPDX license list has no licenses")
 	}
 
 	return knowledge.GetDetails(result.Licenses), nil

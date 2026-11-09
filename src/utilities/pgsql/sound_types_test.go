@@ -178,3 +178,36 @@ func TestEpssScoreDateIsStoredOnInsert(t *testing.T) {
 		t.Errorf("ScoreDate = %s, want 2026-11-08", row.ScoreDate)
 	}
 }
+
+func TestEpssUpdateChangesExistingScoreAndDate(t *testing.T) {
+	db := setupTestDB(t, soundTypesTestSchema)
+	first := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
+	second := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+
+	if err := UpdateEPSS(db, []knowledge.EPSS{{CVE: "CVE-2024-1", Score: 0.1, Percentile: 0.2, ScoreDate: first}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateEPSS(db, []knowledge.EPSS{{CVE: "CVE-2024-1", Score: 0.5, Percentile: 0.6, ScoreDate: second}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var row knowledge.EPSS
+	if err := db.NewSelect().Model(&row).Where("cve = ?", "CVE-2024-1").Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if row.Score != 0.5 || row.Percentile != 0.6 || row.ScoreDate.Format("2006-01-02") != "2026-11-08" {
+		t.Errorf("row = %+v, want the second score and date", row)
+	}
+}
+
+func TestEpssUpdateAcceptsRepeatedCVE(t *testing.T) {
+	db := setupTestDB(t, soundTypesTestSchema)
+	err := UpdateEPSS(db, []knowledge.EPSS{{CVE: "CVE-2024-1", Score: 0.1}, {CVE: "CVE-2024-1", Score: 0.9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var score float32
+	if err := db.NewRaw("SELECT score FROM epss").Scan(context.Background(), &score); err != nil || score != 0.9 {
+		t.Errorf("score = %v, err %v, want the last value 0.9", score, err)
+	}
+}

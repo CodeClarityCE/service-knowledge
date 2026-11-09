@@ -1,6 +1,7 @@
 package cwe
 
 import (
+	"errors"
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
@@ -23,6 +24,10 @@ func downloadFile(url string) (knowledge.CWEListImport, error) {
 		return knowledge.CWEListImport{}, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return knowledge.CWEListImport{}, fmt.Errorf("unexpected status fetching CWE list: %s", resp.Status)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -65,11 +70,17 @@ func cleanString(text string) string {
 	return res
 }
 
+// catalogURL is the current CWE list.
+var catalogURL = "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip"
+
 func downloadCWEs() ([]knowledge.CWEEntry, error) {
-	res, err := downloadFile("https://cwe.mitre.org/data/xml/cwec_latest.xml.zip")
+	res, err := downloadFile(catalogURL)
 	if err != nil {
 		fmt.Println(err)
 		return nil, err
+	}
+	if len(res.Weaknesses.Weaknesses) == 0 {
+		return nil, errors.New("CWE list has no weaknesses")
 	}
 
 	weaknessMap := map[string]knowledge.WeaknessCWE{}
