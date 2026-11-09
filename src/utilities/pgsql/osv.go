@@ -21,7 +21,7 @@ func UpdateOsv(db *bun.DB, osv knowledge.OSVItem) error {
 	// Use upsert (INSERT ... ON CONFLICT) for better performance and atomicity
 	_, err := db.NewInsert().
 		Model(&osv).
-		On("CONFLICT (osv_id) DO UPDATE SET schema_version = EXCLUDED.schema_version, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, modified = EXCLUDED.modified, published = EXCLUDED.published, withdrawn = EXCLUDED.withdrawn, aliases = EXCLUDED.aliases, related = EXCLUDED.related, summary = EXCLUDED.summary, details = EXCLUDED.details, severity = EXCLUDED.severity, affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\", credits = EXCLUDED.credits, database_specific = EXCLUDED.database_specific, cwes = EXCLUDED.cwes, cve = EXCLUDED.cve").
+		On("CONFLICT (osv_id) DO UPDATE SET schema_version = EXCLUDED.schema_version, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, modified = EXCLUDED.modified, published = EXCLUDED.published, withdrawn = EXCLUDED.withdrawn, aliases = EXCLUDED.aliases, related = EXCLUDED.related, summary = EXCLUDED.summary, details = EXCLUDED.details, severity = EXCLUDED.severity, affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\", credits = EXCLUDED.credits, database_specific = EXCLUDED.database_specific, cwes = EXCLUDED.cwes, cve = EXCLUDED.cve, kind = EXCLUDED.kind").
 		Exec(ctx)
 
 	if err != nil {
@@ -51,7 +51,7 @@ func BatchUpdateOsv(db *bun.DB, osvItems []knowledge.OSVItem) error {
 	// Use batch insert with ON CONFLICT for maximum efficiency
 	_, err = tx.NewInsert().
 		Model(&osvItems).
-		On("CONFLICT (osv_id) DO UPDATE SET schema_version = EXCLUDED.schema_version, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, modified = EXCLUDED.modified, published = EXCLUDED.published, withdrawn = EXCLUDED.withdrawn, aliases = EXCLUDED.aliases, related = EXCLUDED.related, summary = EXCLUDED.summary, details = EXCLUDED.details, severity = EXCLUDED.severity, affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\", credits = EXCLUDED.credits, database_specific = EXCLUDED.database_specific, cwes = EXCLUDED.cwes, cve = EXCLUDED.cve").
+		On("CONFLICT (osv_id) DO UPDATE SET schema_version = EXCLUDED.schema_version, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, modified = EXCLUDED.modified, published = EXCLUDED.published, withdrawn = EXCLUDED.withdrawn, aliases = EXCLUDED.aliases, related = EXCLUDED.related, summary = EXCLUDED.summary, details = EXCLUDED.details, severity = EXCLUDED.severity, affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\", credits = EXCLUDED.credits, database_specific = EXCLUDED.database_specific, cwes = EXCLUDED.cwes, cve = EXCLUDED.cve, kind = EXCLUDED.kind").
 		Exec(ctx)
 
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
+	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
 
 func TestUpdate(t *testing.T) {
@@ -40,5 +41,22 @@ func TestImportEcosystemsReportsFailureAfterTryingAll(t *testing.T) {
 func TestImportEcosystemsSucceedsWhenAllSucceed(t *testing.T) {
 	if err := importEcosystems([]string{"npm"}, func(string) error { return nil }); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParseAdvisorySetsAdvisoryKind(t *testing.T) {
+	cases := map[string]string{
+		"MAL-2024-1":          knowledge.AdvisoryKindMalicious,
+		"GHSA-xxxx-yyyy-zzzz": knowledge.AdvisoryKindVulnerability,
+		"PYSEC-2024-1":        knowledge.AdvisoryKindVulnerability,
+	}
+	for id, want := range cases {
+		item, err := ParseAdvisory([]byte(`{"id":"` + id + `"}`))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if item.Kind != want {
+			t.Errorf("%s: Kind = %q, want %q", id, item.Kind, want)
+		}
 	}
 }

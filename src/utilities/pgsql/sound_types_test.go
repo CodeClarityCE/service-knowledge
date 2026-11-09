@@ -74,7 +74,7 @@ func TestOsvDatesRoundTripThroughTimestamptz(t *testing.T) {
 	}
 }
 
-func TestOsvUpsertKeepsRetirementAndKind(t *testing.T) {
+func TestOsvUpsertKeepsRetirement(t *testing.T) {
 	db := setupTestDB(t, soundTypesTestSchema)
 	ctx := context.Background()
 	if err := UpdateOsv(db, knowledge.OSVItem{OSVId: "MAL-2024-1"}); err != nil {
@@ -84,7 +84,6 @@ func TestOsvUpsertKeepsRetirementAndKind(t *testing.T) {
 	_, err := db.NewUpdate().Model((*knowledge.OSVItem)(nil)).
 		Set("retired_reason = ?", knowledge.RetiredRemoved).
 		Set("retired_at = ?", retired).
-		Set("kind = ?", knowledge.AdvisoryKindMalicious).
 		Where("osv_id = ?", "MAL-2024-1").
 		Exec(ctx)
 	if err != nil {
@@ -99,8 +98,28 @@ func TestOsvUpsertKeepsRetirementAndKind(t *testing.T) {
 	if item.RetiredReason != knowledge.RetiredRemoved || !item.RetiredAt.Equal(retired) {
 		t.Errorf("retirement = %q %s, want it unchanged", item.RetiredReason, item.RetiredAt)
 	}
-	if item.Kind != knowledge.AdvisoryKindMalicious {
-		t.Errorf("Kind = %q, want it unchanged", item.Kind)
+}
+
+func TestOsvUpsertsWriteAdvisoryKind(t *testing.T) {
+	upserts := map[string]func(*bun.DB, knowledge.OSVItem) error{
+		"single": UpdateOsv,
+		"batch": func(db *bun.DB, item knowledge.OSVItem) error {
+			return BatchUpdateOsv(db, []knowledge.OSVItem{item})
+		},
+	}
+	for name, upsert := range upserts {
+		t.Run(name, func(t *testing.T) {
+			db := setupTestDB(t, soundTypesTestSchema)
+			if err := upsert(db, knowledge.OSVItem{OSVId: "MAL-2024-1", Kind: knowledge.AdvisoryKindVulnerability}); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+			if err := upsert(db, knowledge.OSVItem{OSVId: "MAL-2024-1", Kind: knowledge.AdvisoryKindMalicious}); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+			if got := readOsv(t, db, "MAL-2024-1").Kind; got != knowledge.AdvisoryKindMalicious {
+				t.Errorf("Kind = %q, want %q", got, knowledge.AdvisoryKindMalicious)
+			}
+		})
 	}
 }
 
