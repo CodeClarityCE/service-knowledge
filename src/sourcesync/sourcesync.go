@@ -97,6 +97,17 @@ func SetWatermark(db *bun.DB, source string, watermark time.Time) error {
 	return nil
 }
 
+// ResetWatermark clears the source's watermark and bulk progress, so its next sync is a full fetch.
+func ResetWatermark(db *bun.DB, source string) error {
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO knowledge_source_sync (source) VALUES (?)
+		ON CONFLICT (source) DO UPDATE SET watermark = NULL, bulk_completed_at = NULL`, source)
+	if err != nil {
+		return fmt.Errorf("reset %s watermark: %w", source, err)
+	}
+	return nil
+}
+
 // BulkCompletedAt returns the time a finished bulk import is current to while
 // its enrichment is pending, or the zero time if none is pending.
 func BulkCompletedAt(db *bun.DB, source string) (time.Time, error) {

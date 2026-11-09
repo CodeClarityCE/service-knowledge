@@ -42,6 +42,7 @@ func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 	mux.HandleFunc("/last", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, records) })
 	mux.HandleFunc("/bulk", func(w http.ResponseWriter, _ *http.Request) {
 		bulkDownloads.Add(1)
+		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		w.WriteHeader(status)
 		fmt.Fprint(w, dump)
 	})
@@ -49,9 +50,11 @@ func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	originalBulk, originalRich, originalLast := bulkDumpURL, vulnrichmentURL, lastUpdatedAPI
-	bulkDumpURL, vulnrichmentURL, lastUpdatedAPI = server.URL+"/bulk", server.URL+"/rich", server.URL+"/last"
-	t.Cleanup(func() { bulkDumpURL, vulnrichmentURL, lastUpdatedAPI = originalBulk, originalRich, originalLast })
+	originalBulk, originalRich, originalWindow, originalInterval := bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval
+	bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = server.URL+"/bulk", server.URL+"/rich", server.URL+"/last", 0
+	t.Cleanup(func() {
+		bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = originalBulk, originalRich, originalWindow, originalInterval
+	})
 	return bulkDownloads
 }
 
@@ -176,7 +179,7 @@ func TestUnreadableIncrementalResponseFallsBackToBulkDump(t *testing.T) {
 func TestVulnrichmentFailureFailsSourceWithoutSecondBulkDownload(t *testing.T) {
 	db := setup(t, false)
 	bulkDownloads := serve(t, "[]", record, http.StatusOK)
-	vulnrichmentURL = lastUpdatedAPI + "/missing"
+	vulnrichmentURL = vulnerabilityAPI + "/missing"
 
 	if err := Update(db, db); err == nil {
 		t.Fatal("a failed vulnrichment import should fail the source")
@@ -220,12 +223,12 @@ func watermark(t *testing.T, db *bun.DB) time.Time {
 	return value
 }
 
-func TestEnrichmentRetrySkipsBulkAndAdvancesFromBulkTime(t *testing.T) {
+func TestEnrichmentRetrySkipsBulkAndAdvancesFromRunStart(t *testing.T) {
 	db := setup(t, false)
 	bulkDownloads := serve(t, "[]", record, http.StatusOK)
 	serveEnrichment(t, http.StatusBadGateway, "")
 
-	before := time.Now().Truncate(time.Microsecond)
+	before := time.Now().Truncate(time.Second)
 	if err := Update(db, db); err == nil {
 		t.Fatal("a failed enrichment should fail the source")
 	}
@@ -241,6 +244,7 @@ func TestEnrichmentRetrySkipsBulkAndAdvancesFromBulkTime(t *testing.T) {
 	}
 
 	serveEnrichment(t, http.StatusOK, enrichedRecord)
+	retryStart := time.Now().Truncate(time.Second)
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +259,11 @@ func TestEnrichmentRetrySkipsBulkAndAdvancesFromBulkTime(t *testing.T) {
 	if rows != 2 {
 		t.Errorf("rows = %d, want the bulk and the enrichment record", rows)
 	}
-	if got := watermark(t, db); !got.Equal(completedAt) {
-		t.Errorf("watermark = %v, want the bulk time %v", got, completedAt)
+	if got := watermark(t, db); got.Before(retryStart) {
+		t.Errorf("watermark = %v, want the retry's start %v", got, retryStart)
 	}
-	if got := testhelper.ConfigTime(t, db, "gcve_last"); !got.Equal(completedAt) {
-		t.Errorf("gcve_last = %v, want the bulk time %v", got, completedAt)
+	if got := testhelper.ConfigTime(t, db, "gcve_last"); got.Before(retryStart) {
+		t.Errorf("gcve_last = %v, want the retry's start %v", got, retryStart)
 	}
 	if got := bulkCompletedAt(t, db); !got.IsZero() {
 		t.Errorf("bulk_completed_at = %v, want it cleared", got)

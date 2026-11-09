@@ -118,6 +118,53 @@ func ReconcileOsv(db *bun.DB, snapshotIDs []string, ecosystems []string, retired
 	return nil
 }
 
+// retireAbsent retires active rows of table that a complete snapshot no longer contains and drops their package links.
+func retireAbsent(db *bun.DB, source, table, keyColumn, linkColumn string, snapshot []string, retiredAt time.Time) error {
+	ctx := context.Background()
+
+	var stored []string
+	err := db.NewRaw("SELECT ? FROM ? WHERE retired_reason IS NULL", bun.Ident(keyColumn), bun.Ident(table)).Scan(ctx, &stored)
+	if err != nil {
+		return fmt.Errorf("read stored %s ids: %w", source, err)
+	}
+
+	absent := absentKeys(stored, snapshot)
+	if err := checkRemoval(source, len(stored), len(absent), len(snapshot)); err != nil {
+		return err
+	}
+
+	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return eachChunk(absent, func(chunk []string) error {
+			_, err := tx.ExecContext(ctx, `
+				WITH retired AS (
+					UPDATE ? SET retired_reason = ?, retired_at = ?
+					WHERE ? IN (?) AND retired_reason IS NULL
+					RETURNING id
+				)
+				DELETE FROM package_vulnerability WHERE ? IN (SELECT id FROM retired)`,
+				bun.Ident(table), knowledge.RetiredRemoved, retiredAt, bun.Ident(keyColumn), bun.In(chunk), bun.Ident(linkColumn))
+			return err
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("retire removed %s records: %w", source, err)
+	}
+	logReconciled(source, len(stored), len(absent))
+	return nil
+}
+
+// ReconcileNvd retires active CVEs that a complete NVD fetch no longer contains.
+// snapshotIDs must hold every record the fetch returned, including rejected and deferred ones.
+func ReconcileNvd(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error {
+	return retireAbsent(db, knowledge.SourceNVD, "nvd", "nvd_id", "nvd_id", snapshotIDs, retiredAt)
+}
+
+// ReconcileGcve retires active records that a complete GCVE fetch no longer contains.
+// snapshotIDs must hold every record the fetch returned, including rejected ones.
+func ReconcileGcve(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error {
+	return retireAbsent(db, knowledge.SourceGCVE, "gcve", "gcve_id", "gcve_id", snapshotIDs, retiredAt)
+}
+
 // SyncOsvRetirement retires the given advisories that are withdrawn and reactivates those the source asserts again.
 func SyncOsvRetirement(db *bun.DB, osvIDs []string) error {
 	ctx := context.Background()
