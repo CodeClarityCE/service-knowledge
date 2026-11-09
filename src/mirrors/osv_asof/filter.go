@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
@@ -25,6 +26,10 @@ const deleteChunkSize = 10000
 // empty timestamps kept) are shared with Update via publishedAfter.
 func Filter(db *bun.DB, configDB *bun.DB, asof time.Time) error {
 	ctx := context.Background()
+
+	if err := datedrestore.RequireMarked(db); err != nil {
+		return fmt.Errorf("refusing to filter: %w", err)
+	}
 
 	scope, args, err := scopeCondition()
 	if err != nil {

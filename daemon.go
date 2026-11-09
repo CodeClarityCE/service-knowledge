@@ -78,7 +78,7 @@ func runDaemon(debug bool) {
 	db := knowledgeService.DB
 	scheduler, err := newUpdateScheduler(debug, func() error {
 		return knowledge.WithUpdateLock(context.Background(), db.Knowledge, func() error {
-			return knowledge.Update(db.Knowledge, db.Config, db.CodeClarity)
+			return knowledge.UpdateAndValidate(db.Knowledge, db.Config, db.CodeClarity)
 		})
 	})
 	if err != nil {

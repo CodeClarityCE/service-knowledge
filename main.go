@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	knowledge "github.com/CodeClarityCE/service-knowledge/src"
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv_asof"
+	"github.com/CodeClarityCE/service-knowledge/src/validation"
 )
 
 func main() {
@@ -24,6 +27,7 @@ func main() {
 	var advisoryRepo = ""
 	var checkoutDate = ""
 	var epssDate = ""
+	var sources = ""
 
 	// Bind flags
 	flag.StringVar(&action, "action", action, "Action to perform")
@@ -31,6 +35,8 @@ func main() {
 	flag.StringVar(&advisoryRepo, "advisory-repo", advisoryRepo, "Path to a github/advisory-database checkout for the update-asof action")
 	flag.StringVar(&checkoutDate, "checkout-date", checkoutDate, "RFC3339 date of the checked-out advisory commit, stamped as osv_last (defaults to --asof)")
 	flag.StringVar(&epssDate, "epss-date", epssDate, "Optional EPSS snapshot date (YYYY-MM-DD) imported by the update-asof and filter-asof actions")
+
+	flag.StringVar(&sources, "sources", sources, "Comma-separated source names for the reset-validation-floor action")
 
 	// Parse flags
 	flag.Parse()
@@ -66,7 +72,7 @@ func main() {
 		defer knowledgeService.Close()
 
 		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
-			return knowledge.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
+			return knowledge.UpdateAndValidate(knowledgeService.DB.Knowledge, knowledgeService.DB.Config, knowledgeService.DB.CodeClarity)
 		})
 		if err != nil {
 			log.Fatalf("Failed to update knowledge: %v", err)
@@ -82,12 +88,49 @@ func main() {
 		defer knowledgeService.Close()
 
 		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
+			if err := datedrestore.RefuseMarked(knowledgeService.DB.Knowledge); err != nil {
+				return err
+			}
 			return osv.Update(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
 		})
 		if err != nil {
 			log.Fatalf("Failed to update OSV advisories: %v", err)
 		}
 		log.Println("OSV update completed successfully")
+	case "validate":
+		log.Println("Validating the knowledge database...")
+
+		knowledgeService, err := CreateKnowledgeService()
+		if err != nil {
+			log.Fatalf("Failed to create knowledge service: %v", err)
+		}
+		defer knowledgeService.Close()
+
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
+			return knowledge.Validate(knowledgeService.DB.Knowledge)
+		})
+		if err != nil {
+			log.Fatalf("Knowledge validation failed: %v", err)
+		}
+		log.Println("Knowledge validation passed")
+	case "reset-validation-floor":
+		if sources == "" {
+			log.Fatalf("The reset-validation-floor action requires --sources (comma-separated source names)")
+		}
+
+		knowledgeService, err := CreateKnowledgeService()
+		if err != nil {
+			log.Fatalf("Failed to create knowledge service: %v", err)
+		}
+		defer knowledgeService.Close()
+
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
+			return validation.ResetRowFloors(knowledgeService.DB.Knowledge, strings.Split(sources, ",")...)
+		})
+		if err != nil {
+			log.Fatalf("Failed to reset validation floors: %v", err)
+		}
+		log.Printf("Reset validation floors for %s", sources)
 	case "update-asof":
 		if asof == "" || advisoryRepo == "" {
 			log.Fatalf("The update-asof action requires --asof and --advisory-repo")

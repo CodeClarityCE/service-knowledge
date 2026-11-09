@@ -2,9 +2,11 @@ package osv_asof
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -23,6 +25,9 @@ func setupSync(t *testing.T) *bun.DB {
 		t.Fatal(err)
 	}
 	testhelper.SeedWatermark(t, db, knowledge.SourceOSV, seededWatermark)
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO knowledge_dated_restore (label) VALUES ('test')"); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.ExecContext(context.Background(),
 		"UPDATE knowledge_source_sync SET last_outcome = 'failure', last_error = 'earlier', row_count = 7")
 	if err != nil {
@@ -79,6 +84,9 @@ func TestUpdateMovesOSVWatermarkToCheckoutDate(t *testing.T) {
 func TestFilterCreatesMissingOSVSyncRow(t *testing.T) {
 	db := testhelper.SetupSyncTestDB(t)
 	testhelper.CreateTables(t, db, (*knowledge.OSVItem)(nil), (*knowledge.PackageVulnerability)(nil))
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO knowledge_dated_restore (label) VALUES ('test')"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := Filter(db, db, testAsof); err != nil {
 		t.Fatal(err)
@@ -89,5 +97,21 @@ func TestFilterCreatesMissingOSVSyncRow(t *testing.T) {
 	}
 	if !got.Equal(testAsof) {
 		t.Errorf("watermark = %v, want %v", got, testAsof)
+	}
+}
+
+func TestFilterRefusesAnUnmarkedDatabase(t *testing.T) {
+	db := setupSync(t)
+	if _, err := db.ExecContext(context.Background(), "DELETE FROM knowledge_dated_restore"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Filter(db, db, testAsof)
+
+	if !errors.Is(err, datedrestore.ErrNotDatedRestore) {
+		t.Fatalf("Filter = %v, want ErrNotDatedRestore", err)
+	}
+	if got, err := sourcesync.Watermark(db, knowledge.SourceOSV); err != nil || !got.Equal(seededWatermark) {
+		t.Errorf("watermark = %v (err %v), want %v", got, err, seededWatermark)
 	}
 }
