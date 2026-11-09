@@ -104,7 +104,15 @@ func TestFullRefetchRefusesAMarkedDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := FullRefetch(db, nil); !errors.Is(err, datedrestore.ErrDatedRestore) {
-		t.Errorf("FullRefetch = %v, want ErrDatedRestore", err)
+	sourceFetched := false
+	err := fullRefetch(db, []refetchSource{
+		{knowledge_db.SourceNVD, func() error { sourceFetched = true; return nil }},
+	})
+
+	if !errors.Is(err, datedrestore.ErrDatedRestore) {
+		t.Errorf("fullRefetch = %v, want ErrDatedRestore", err)
+	}
+	if sourceFetched {
+		t.Error("a marked database should not be re-fetched")
 	}
 }
