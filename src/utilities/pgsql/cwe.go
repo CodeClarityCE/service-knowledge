@@ -47,7 +47,7 @@ func UpdateCWE(db *bun.DB, cwes []knowledge.CWEEntry) error {
 	if len(to_insert) > 0 {
 		_, err := db.NewInsert().Model(&to_insert).Exec(ctx)
 		if err != nil {
-			panic(err)
+			return err
 		}
 	}
 
@@ -59,7 +59,7 @@ func UpdateCWE(db *bun.DB, cwes []knowledge.CWEEntry) error {
 			Bulk().
 			Exec(ctx)
 		if err != nil {
-			panic(err)
+			return err
 		}
 
 	}

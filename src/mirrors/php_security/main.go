@@ -4,6 +4,7 @@ package php_security
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
@@ -44,6 +46,9 @@ type PackagistAdvisorySource struct {
 	RemoteID string `json:"remoteId"`
 }
 
+// advisoriesURL is the Packagist security advisories API.
+var advisoriesURL = "https://packagist.org/api/security-advisories/?"
+
 // advisoryInfo holds advisory ID and package name for creating package_vulnerability links
 type advisoryInfo struct {
 	advisoryId  string
@@ -52,16 +57,18 @@ type advisoryInfo struct {
 
 // Update updates the PHP security advisories from FriendsOfPHP
 func Update(db *bun.DB) error {
-	log.Println("Starting FriendsOfPHP security advisories update")
+	return sourcesync.Run(db, knowledge.SourceFriendsOfPHP, func() (time.Time, error) {
+		log.Println("Starting FriendsOfPHP security advisories update")
+		syncedAt := time.Now()
 
-	// Update FriendsOfPHP Security Advisories
-	if err := updateFriendsOfPHPAdvisories(db); err != nil {
-		log.Printf("Error updating FriendsOfPHP advisories: %v", err)
-		return err
-	}
+		if err := updateFriendsOfPHPAdvisories(db); err != nil {
+			log.Printf("Error updating FriendsOfPHP advisories: %v", err)
+			return time.Time{}, err
+		}
 
-	log.Println("FriendsOfPHP security advisories update completed")
-	return nil
+		log.Println("FriendsOfPHP security advisories update completed")
+		return syncedAt, nil
+	})
 }
 
 // updateFriendsOfPHPAdvisories fetches and processes security advisories from Packagist
@@ -98,6 +105,7 @@ func updateFriendsOfPHPAdvisories(db *bun.DB) error {
 
 	// Batch requests for efficiency (Packagist supports multiple packages per request)
 	batchSize := 10
+	var failures []error
 	for i := 0; i < len(popularPackages); i += batchSize {
 		end := min(i+batchSize, len(popularPackages))
 		batch := popularPackages[i:end]
@@ -105,18 +113,18 @@ func updateFriendsOfPHPAdvisories(db *bun.DB) error {
 		log.Printf("Fetching advisories for batch %d-%d of %d packages", i+1, end, len(popularPackages))
 		if err := fetchBatchAdvisories(db, batch); err != nil {
 			log.Printf("Error fetching batch advisories: %v", err)
-			// Continue with next batch
+			failures = append(failures, err)
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 // fetchBatchAdvisories fetches advisories for multiple packages from Packagist
 func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 	// Build URL with multiple packages
 	var url strings.Builder
-	url.WriteString("https://packagist.org/api/security-advisories/?")
+	url.WriteString(advisoriesURL)
 	for i, pkg := range packages {
 		if i > 0 {
 			url.WriteString("&")
@@ -146,6 +154,7 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 
 	// Step 1: Insert advisories and collect advisory IDs with their package names
 	var advisoryInfos []advisoryInfo
+	var failures []error
 	totalAdvisories := 0
 
 	for packageName, advisories := range response.Advisories {
@@ -153,6 +162,7 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 			dbAdvisory := convertPackagistToDBModel(advisory)
 			if err := pgsql.UpdateFriendsOfPHP(db, dbAdvisory); err != nil {
 				log.Printf("Error inserting advisory %s: %v", advisory.AdvisoryID, err)
+				failures = append(failures, fmt.Errorf("advisory %s: %w", advisory.AdvisoryID, err))
 				continue
 			}
 			advisoryInfos = append(advisoryInfos, advisoryInfo{
@@ -179,20 +189,19 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 
 		advisoryIdToUUID, err := pgsql.GetFriendsOfPhpUUIDsByAdvisoryIds(db, advisoryIds)
 		if err != nil {
-			log.Printf("Error getting FriendsOfPHP UUIDs: %v", err)
-			return nil // Don't fail the whole batch
+			return errors.Join(append(failures, fmt.Errorf("get FriendsOfPHP UUIDs: %w", err))...)
 		}
 
 		// Step 3: Create package_vulnerability records
 		pkgVulns := extractPackageVulnerabilitiesFromFriendsOfPhp(advisoryInfos, advisoryIdToUUID)
 		if len(pkgVulns) > 0 {
 			if err := pgsql.BatchInsertFriendsOfPhpPackageVulnerabilities(db, pkgVulns); err != nil {
-				log.Printf("Error inserting package vulnerabilities from FriendsOfPHP: %v", err)
+				failures = append(failures, fmt.Errorf("insert package links: %w", err))
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 // extractPackageVulnerabilitiesFromFriendsOfPhp creates package-vulnerability links from FriendsOfPHP advisories.
