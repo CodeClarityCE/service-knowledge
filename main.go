@@ -131,6 +131,22 @@ func main() {
 			log.Fatalf("Failed to reset validation floors: %v", err)
 		}
 		log.Printf("Reset validation floors for %s", sources)
+	case "full-refetch":
+		log.Println("Running full NVD and GCVE re-fetch...")
+
+		knowledgeService, err := CreateKnowledgeService()
+		if err != nil {
+			log.Fatalf("Failed to create knowledge service: %v", err)
+		}
+		defer knowledgeService.Close()
+
+		err = knowledge.WithUpdateLock(context.Background(), knowledgeService.DB.Knowledge, func() error {
+			return knowledge.FullRefetch(knowledgeService.DB.Knowledge, knowledgeService.DB.Config)
+		})
+		if err != nil {
+			log.Fatalf("Failed to re-fetch NVD and GCVE: %v", err)
+		}
+		log.Println("Full NVD and GCVE re-fetch completed successfully")
 	case "update-asof":
 		if asof == "" || advisoryRepo == "" {
 			log.Fatalf("The update-asof action requires --asof and --advisory-repo")
