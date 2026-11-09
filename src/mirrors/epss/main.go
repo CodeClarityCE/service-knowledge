@@ -10,12 +10,15 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// Update is a function that updates the CWEs in the knowledge database graph.
-// It downloads the CWEs from the graph, and then updates them.
+// Update imports the current EPSS scores and removes CVEs the file no longer contains.
 func Update(db *bun.DB) error {
 	return sourcesync.Run(db, knowledge.SourceEPSS, func() (time.Time, error) {
 		syncedAt := time.Now()
-		if err := UpdateAsOf(db, ""); err != nil {
+		cves, err := importScores(db, "")
+		if err != nil {
+			return time.Time{}, err
+		}
+		if err := pgsql.ReconcileEPSS(db, cves); err != nil {
 			return time.Time{}, err
 		}
 		return syncedAt, nil
@@ -23,25 +26,34 @@ func Update(db *bun.DB) error {
 }
 
 // UpdateAsOf imports the EPSS scores published on the given date (YYYY-MM-DD).
-// An empty date imports the current scores, identical to Update.
+// A dated file is a partial view, so it never removes stored CVEs.
 func UpdateAsOf(db *bun.DB, date string) error {
+	_, err := importScores(db, date)
+	return err
+}
+
+// importScores stores a fully parsed scores file and returns its CVEs.
+func importScores(db *bun.DB, date string) ([]string, error) {
 	log.Println("Start updating EPSS scores")
 	epss, err := downloadEPSS(epssURL(date))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = pgsql.UpdateEPSS(db, epss)
-	if err != nil {
-		return err
+	if err := pgsql.UpdateEPSS(db, epss); err != nil {
+		return nil, err
 	}
-	return nil
+	cves := make([]string, len(epss))
+	for i, score := range epss {
+		cves[i] = score.CVE
+	}
+	return cves, nil
 }
 
 // epssURL returns the download URL for the EPSS scores file: the current file
 // when date is empty, or the dated snapshot (YYYY-MM-DD) otherwise.
 func epssURL(date string) string {
 	if date == "" {
-		return "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+		return baseURL + "epss_scores-current.csv.gz"
 	}
-	return "https://epss.empiricalsecurity.com/epss_scores-" + date + ".csv.gz"
+	return baseURL + "epss_scores-" + date + ".csv.gz"
 }

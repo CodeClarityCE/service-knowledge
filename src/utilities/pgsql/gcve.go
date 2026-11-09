@@ -37,6 +37,7 @@ func BatchUpdateGcve(db *bun.DB, items []knowledge.GCVEItem) error {
 	}
 
 	items = deduplicateGcveItems(items)
+	normalizeGcveDates(items)
 
 	ctx := context.Background()
 
@@ -53,6 +54,14 @@ func BatchUpdateGcve(db *bun.DB, items []knowledge.GCVEItem) error {
 
 	if err != nil {
 		return fmt.Errorf("failed to batch upsert %d GCVE records: %w", len(items), err)
+	}
+
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.GCVEId
+	}
+	if err := clearRetirement(ctx, tx, "gcve", "gcve_id", ids); err != nil {
+		return fmt.Errorf("reactivate GCVE records: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {

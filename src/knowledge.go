@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/cwe"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
@@ -18,6 +19,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	"github.com/CodeClarityCE/service-knowledge/src/validation"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
 	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
@@ -136,6 +138,10 @@ func UpdateWithSetup() error {
 
 // Update runs every knowledge source, then reports all that failed as a joined error.
 func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
+	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
+		return err
+	}
+
 	// Package-update notifications need the codeclarity database; set it once
 	// here rather than opening an ad-hoc connection per package (see
 	// pgsql.SetCodeClarityDB's doc comment).
@@ -151,6 +157,45 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error 
 		func() error { return php_security.Update(knowledgeDB) },
 		func() error { return js.Follow(knowledgeDB, configDB) },
 	})
+}
+
+// UpdateAndValidate updates every source, then validates the result, also after a failed update.
+func UpdateAndValidate(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
+	return updateThenValidate(
+		func() error { return Update(knowledgeDB, configDB, codeClarityDB) },
+		func() error { return Validate(knowledgeDB) },
+	)
+}
+
+// updateThenValidate joins the update and validation failures; a refused update is not validated.
+func updateThenValidate(update, validate func() error) error {
+	updateErr := update()
+	if errors.Is(updateErr, datedrestore.ErrDatedRestore) {
+		return updateErr
+	}
+	return errors.Join(updateErr, validate())
+}
+
+// ErrValidationFailed means at least one knowledge source failed validation.
+var ErrValidationFailed = errors.New("knowledge validation failed")
+
+// Validate checks every source and logs and returns any failure.
+func Validate(knowledgeDB *bun.DB) error {
+	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
+		return err
+	}
+	report, err := validation.Run(knowledgeDB, time.Now())
+	for _, finding := range report.Findings {
+		logger.WithFields(logrus.Fields{"source": finding.Source, "check": finding.Check, "error": finding.Message}).Error("Knowledge source failed validation")
+	}
+	if err != nil {
+		return fmt.Errorf("knowledge validation could not finish: %w", err)
+	}
+	if report.Failed() {
+		return fmt.Errorf("%w: %d checks failed", ErrValidationFailed, len(report.Findings))
+	}
+	logger.Info("Knowledge validation passed")
+	return nil
 }
 
 // runAll runs every step, regardless of earlier failures, and joins their errors.
