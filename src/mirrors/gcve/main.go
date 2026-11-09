@@ -5,8 +5,8 @@ package gcve
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,19 +15,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
-	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
-const (
+// Upstream endpoints, replaceable in tests.
+var (
 	bulkDumpURL     = "https://vulnerability.circl.lu/dumps/cvelistv5.ndjson"
 	vulnrichmentURL = "https://vulnerability.circl.lu/dumps/vulnrichment.ndjson"
 	lastUpdatedAPI  = "https://vulnerability.circl.lu/api/last"
-	batchSize       = 100
 )
+
+const batchSize = 100
 
 // httpClient is a shared HTTP client with timeouts for all GCVE requests.
 // Bulk downloads are ~4.7GB so the timeout must be generous.
@@ -38,71 +40,76 @@ var httpClient = &http.Client{
 // Update synchronizes GCVE/CVE data from vulnerability-lookup.
 // Uses bulk dump for initial load, incremental API for subsequent updates.
 func Update(db *bun.DB, db_config *bun.DB) error {
+	return sourcesync.Run(db, knowledge.SourceGCVE, func() (time.Time, error) {
+		return sync(db, db_config)
+	})
+}
+
+// sync returns the time the data is complete up to, taken before any fetch.
+func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	log.Println("Start updating GCVE/vulnerability-lookup")
 
-	conf, err := getLastGCVESync(db_config)
+	bulkTime, err := sourcesync.BulkCompletedAt(db, knowledge.SourceGCVE)
 	if err != nil {
-		log.Println("Can't get config for GCVE sync", err)
-		return err
+		return time.Time{}, err
 	}
+	last, err := sourcesync.Watermark(db, knowledge.SourceGCVE)
+	if err != nil {
+		return time.Time{}, err
+	}
+	syncedAt := time.Now()
 
-	if conf.GcveLast.IsZero() {
+	switch {
+	case !bulkTime.IsZero():
+		log.Println("GCVE bulk import already done, retrying only the vulnrichment import")
+		syncedAt = bulkTime
+		if err = importVulnrichment(db); err != nil {
+			err = fmt.Errorf("vulnrichment import: %w", err)
+		}
+	case last.IsZero():
 		log.Println("No previous GCVE sync, performing full bulk import")
-		if err := bulkImport(db); err != nil {
-			log.Printf("GCVE bulk import failed: %v", err)
-			return err
-		}
-		if err := importVulnrichment(db); err != nil {
-			log.Printf("Vulnrichment import failed (non-fatal): %v", err)
-		}
-		conf.GcveLast = time.Now()
-		return setLastGCVESync(db_config, conf)
-	}
-
-	// If data is too old, do full reimport
-	if time.Since(conf.GcveLast).Hours() > 24*30 {
+		err = fullImport(db, syncedAt)
+	case time.Since(last).Hours() > 24*30:
 		log.Println("GCVE data older than 30 days, performing full reimport")
-		if err := bulkImport(db); err != nil {
-			log.Printf("GCVE bulk reimport failed: %v", err)
-			return err
-		}
-		if err := importVulnrichment(db); err != nil {
-			log.Printf("Vulnrichment reimport failed (non-fatal): %v", err)
-		}
-		conf.GcveLast = time.Now()
-		return setLastGCVESync(db_config, conf)
+		err = fullImport(db, syncedAt)
+	default:
+		err = incrementalOrBulk(db, last)
+	}
+	if err != nil {
+		return time.Time{}, err
 	}
 
-	// Incremental update via API
-	if err := incrementalUpdate(db, conf.GcveLast); err != nil {
-		log.Printf("GCVE incremental update failed, falling back to bulk import: %v", err)
-		if err := bulkImport(db); err != nil {
-			return fmt.Errorf("GCVE fallback bulk import failed: %w", err)
-		}
+	if err := sourcesync.SetConfigLast(db_config, "gcve_last", syncedAt); err != nil {
+		return time.Time{}, err
 	}
-
-	conf.GcveLast = time.Now()
-	return setLastGCVESync(db_config, conf)
+	return syncedAt, nil
 }
 
-func getLastGCVESync(db_config *bun.DB) (config.Config, error) {
-	ctx := context.Background()
-	var configs []config.Config
-	err := db_config.NewSelect().Model(&configs).Limit(1).Scan(ctx)
-	if err != nil {
-		return config.Config{}, err
+// fullImport loads the bulk dump and the enrichment dump. It records the bulk
+// import as done first, so a later run only has to retry the enrichment.
+func fullImport(db *bun.DB, syncedAt time.Time) error {
+	if err := bulkImport(db); err != nil {
+		return fmt.Errorf("bulk import: %w", err)
 	}
-	if len(configs) == 0 {
-		return config.Config{}, fmt.Errorf("no config found")
-	}
-	return configs[0], nil
-}
-
-func setLastGCVESync(db_config *bun.DB, conf config.Config) error {
-	_, err := db_config.NewUpdate().Model(&conf).Where("id = ?", conf.Id).Exec(context.Background())
-	if err != nil {
-		log.Println("Failed to update GCVE sync timestamp:", err)
+	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, syncedAt); err != nil {
 		return err
+	}
+	if err := importVulnrichment(db); err != nil {
+		return fmt.Errorf("vulnrichment import: %w", err)
+	}
+	return nil
+}
+
+// incrementalOrBulk uses the bulk dump only when the recent records cannot be fetched.
+// A bad record or failed batch fails the source without a bulk download.
+func incrementalOrBulk(db *bun.DB, last time.Time) error {
+	records, fetchErr := fetchRecentRecords(last)
+	if fetchErr == nil {
+		return storeRecentRecords(db, records)
+	}
+	log.Printf("GCVE incremental fetch failed, falling back to bulk import: %v", fetchErr)
+	if err := bulkImport(db); err != nil {
+		return errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
 	}
 	return nil
 }
@@ -147,6 +154,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
 
 	var batch []knowledge.GCVEItem
+	var failures []error
 	totalProcessed := 0
 	parseErrors := 0
 	rejected := 0
@@ -172,6 +180,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 		if len(batch) >= batchSize {
 			if err := processBatch(db, batch); err != nil {
 				log.Printf("Error processing GCVE batch: %v", err)
+				failures = append(failures, err)
 			}
 			totalProcessed += len(batch)
 			batch = batch[:0]
@@ -186,12 +195,17 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 	if len(batch) > 0 {
 		if err := processBatch(db, batch); err != nil {
 			log.Printf("Error processing final GCVE batch: %v", err)
+			failures = append(failures, err)
 		}
 		totalProcessed += len(batch)
 	}
 
 	log.Printf("GCVE: total %d CVE records processed, %d parse errors, %d rejected", totalProcessed, parseErrors, rejected)
-	return scanner.Err()
+	if parseErrors > 0 {
+		failures = append(failures, fmt.Errorf("%d records could not be parsed", parseErrors))
+	}
+	failures = append(failures, scanner.Err())
+	return errors.Join(failures...)
 }
 
 // CVERecordRaw represents the raw JSON structure from the NDJSON dump.
@@ -439,7 +453,7 @@ func processBatch(db *bun.DB, batch []knowledge.GCVEItem) error {
 	pkgVulns := extractPackageVulnerabilities(batch, gcveIdToUUID)
 	if len(pkgVulns) > 0 {
 		if err := pgsql.BatchInsertGcvePackageVulnerabilities(db, pkgVulns); err != nil {
-			log.Printf("Error inserting GCVE package vulnerabilities: %v", err)
+			return fmt.Errorf("insert package links: %w", err)
 		}
 	}
 
@@ -502,15 +516,15 @@ func extractPackageVulnerabilities(gcveItems []knowledge.GCVEItem, gcveIdToUUID 
 	return pkgVulns
 }
 
-// incrementalUpdate fetches recently modified vulnerabilities via the API.
-func incrementalUpdate(db *bun.DB, since time.Time) error {
+// fetchRecentRecords fetches recently modified vulnerabilities via the API.
+func fetchRecentRecords(since time.Time) ([]json.RawMessage, error) {
 	log.Printf("GCVE incremental update since %s", since.Format(time.RFC3339))
 
 	apiKey := os.Getenv("VULNERABILITY_LOOKUP_API_KEY")
 
 	req, err := http.NewRequest("GET", lastUpdatedAPI, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if apiKey != "" && apiKey != "!ChangeMe!" {
 		req.Header.Set("X-API-KEY", apiKey)
@@ -518,32 +532,42 @@ func incrementalUpdate(db *bun.DB, since time.Time) error {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
+		return nil, fmt.Errorf("failed to fetch recent vulnerabilities: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// The /api/last endpoint returns an array of vulnerability records
 	var records []json.RawMessage
 	if err := json.Unmarshal(body, &records); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+	return records, nil
+}
 
+// storeRecentRecords stores the fetched records and reports every record and batch failure.
+func storeRecentRecords(db *bun.DB, records []json.RawMessage) error {
 	var batch []knowledge.GCVEItem
+	var failures []error
 	processed := 0
+	parseErrors := 0
 
 	for _, record := range records {
 		item, err := parseCVERecord(record)
-		if err != nil || item == nil {
+		if err != nil {
+			parseErrors++
 			continue
+		}
+		if item == nil {
+			continue // Skip REJECTED records
 		}
 
 		batch = append(batch, *item)
@@ -551,6 +575,7 @@ func incrementalUpdate(db *bun.DB, since time.Time) error {
 		if len(batch) >= batchSize {
 			if err := processBatch(db, batch); err != nil {
 				log.Printf("Error processing incremental GCVE batch: %v", err)
+				failures = append(failures, err)
 			}
 			processed += len(batch)
 			batch = batch[:0]
@@ -560,10 +585,14 @@ func incrementalUpdate(db *bun.DB, since time.Time) error {
 	if len(batch) > 0 {
 		if err := processBatch(db, batch); err != nil {
 			log.Printf("Error processing final incremental GCVE batch: %v", err)
+			failures = append(failures, err)
 		}
 		processed += len(batch)
 	}
 
 	log.Printf("GCVE incremental update: %d records processed", processed)
-	return nil
+	if parseErrors > 0 {
+		failures = append(failures, fmt.Errorf("%d records could not be parsed", parseErrors))
+	}
+	return errors.Join(failures...)
 }

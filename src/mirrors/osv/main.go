@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -73,24 +74,38 @@ var ImportedEcosystems = []string{
 	"npm",
 }
 
+// dumpBaseURL hosts one all.zip per ecosystem.
+var dumpBaseURL = "https://osv-vulnerabilities.storage.googleapis.com/"
+
 // Update updates the licenses in the OSV (Open Source Vulnerabilities) database for the specified ecosystems.
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
 func Update(db *bun.DB, db_config *bun.DB) error {
+	return sourcesync.Run(db, knowledge.SourceOSV, func() (time.Time, error) {
+		return sync(db, db_config)
+	})
+}
+
+// sync imports every ecosystem and returns the import's start time on full success.
+func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	log.Println("Start updating OSV vulnerabilities")
+	syncedAt := time.Now()
 	bar := progressbar.Default(int64(len(ImportedEcosystems)))
 
 	err := importEcosystems(ImportedEcosystems, func(ecosystem string) error {
 		defer bar.Add(1)
 		log.Printf("Processing ecosystem: %s", ecosystem)
-		url := "https://osv-vulnerabilities.storage.googleapis.com/" + ecosystem + "/all.zip"
+		url := dumpBaseURL + ecosystem + "/all.zip"
 		return processEcosystem(db, ecosystem, url)
 	})
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 
-	return SetLastOSVSync(db_config, time.Now())
+	if err := SetLastOSVSync(db_config, syncedAt); err != nil {
+		return time.Time{}, err
+	}
+	return syncedAt, nil
 }
 
 // importEcosystems tries every ecosystem and reports all that failed.
@@ -265,12 +280,14 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 		unzippedFileBytes, err := readZipFile(zipFile)
 		if err != nil {
 			log.Printf("Error reading zip file %s: %v", zipFile.Name, err)
+			batchFailures = append(batchFailures, fmt.Errorf("read %s: %w", zipFile.Name, err))
 			continue
 		}
 
 		result, err := ParseAdvisory(unzippedFileBytes)
 		if err != nil {
 			log.Printf("Error unmarshaling JSON from %s: %v", zipFile.Name, err)
+			batchFailures = append(batchFailures, fmt.Errorf("parse %s: %w", zipFile.Name, err))
 			continue
 		}
 
@@ -322,7 +339,7 @@ func InsertBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) err
 	pkgVulns := extractPackageVulnerabilities(osvBatch, osvIdToUUID)
 	if len(pkgVulns) > 0 {
 		if err := pgsql.BatchInsertOsvPackageVulnerabilities(db, pkgVulns); err != nil {
-			log.Printf("Error inserting package vulnerabilities for ecosystem %s: %v", ecosystem, err)
+			return fmt.Errorf("insert package links for %s: %w", ecosystem, err)
 		}
 	}
 

@@ -3,6 +3,7 @@ package knowledge
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
@@ -132,74 +134,35 @@ func UpdateWithSetup() error {
 	return updateDatabases()
 }
 
+// Update runs every knowledge source, then reports all that failed as a joined error.
 func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
 	// Package-update notifications need the codeclarity database; set it once
 	// here rather than opening an ad-hoc connection per package (see
 	// pgsql.SetCodeClarityDB's doc comment).
 	pgsql.SetCodeClarityDB(codeClarityDB)
 
-	// Update licenses
-	err := licenses.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+	return runAll([]func() error{
+		func() error { return licenses.Update(knowledgeDB) },
+		func() error { return epss.Update(knowledgeDB) },
+		func() error { return osv.Update(knowledgeDB, configDB) },
+		func() error { return cwe.Update(knowledgeDB) },
+		func() error { return nvd.Update(knowledgeDB, configDB) },
+		func() error { return gcve.Update(knowledgeDB, configDB) },
+		func() error { return php_security.Update(knowledgeDB) },
+		func() error { return js.Follow(knowledgeDB, configDB) },
+	})
+}
+
+// runAll runs every step, regardless of earlier failures, and joins their errors.
+func runAll(steps []func() error) error {
+	var failures []error
+	for _, step := range steps {
+		if err := step(); err != nil {
+			logger.WithFields(logrus.Fields{"error": err.Error()}).Error("Knowledge update step failed")
+			failures = append(failures, err)
+		}
 	}
-
-	// Update EPSS
-	err = epss.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	// Update vulnerabilities
-	err = osv.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	err = cwe.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	err = nvd.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	// Update GCVE/vulnerability-lookup (primary vulnerability source)
-	err = gcve.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	// Update PHP security advisories (FriendsOfPHP Security Advisories)
-	err = php_security.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	// // Import packages
-	// err = js.ImportTop10000(knowledgeDB, configDB)
-	// if err != nil {
-	// 	log.Printf("%v", err)
-	// 	// return err
-	// }
-
-	// Import packages
-	err = js.Follow(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
-	}
-
-	return nil
+	return errors.Join(failures...)
 }
 
 // updateDatabases handles database setup and calls Update with proper connections

@@ -1,8 +1,8 @@
 package nvd
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,13 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
-	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
 	"github.com/uptrace/bun"
 )
+
+// apiURLTemplate is the NVD CVE API, with page size, start index and modified-date window.
+var apiURLTemplate = "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
 
 type NVDStats struct {
 	TotalResults int `json:"totalResults"`
@@ -28,175 +31,135 @@ type Config struct {
 	Last string `json:"last"`
 }
 
-// getLastNVDChangeNumber retrieves the last change number from the NVD configuration document in the specified collection.
-// It reads the "nvd_config" document and returns the value of the "Last" field.
-// If an error occurs during the retrieval process, it logs the error and returns an empty string along with the error.
-func getLastNVDChangeNumber(db_config *bun.DB) (config.Config, error) {
-	ctx := context.Background()
-	var configs []config.Config
-	err := db_config.NewSelect().Model(&configs).Limit(1).Scan(ctx)
-	if err != nil {
-		panic(err)
-	}
-
-	return configs[0], nil
-}
-
-// setLastNVDChangeNumber updates the last change number for the NVD configuration in the specified collection.
-// It takes a driver.Collection and a string representing the last change number as parameters.
-// It returns an error if the update operation fails.
-func setLastNVDChangeNumber(db_config *bun.DB, conf config.Config) error {
-	_, err := db_config.NewUpdate().Model(&conf).Where("id = ?", conf.Id).Exec(context.Background())
-
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-	return nil
-}
-
-// Update is a function that updates the NVD (National Vulnerability Database) by fetching the latest CVE (Common Vulnerabilities and Exposures) data.
-// It takes a driver.Collection and a driver.Graph as parameters.
-// The function retrieves the last modified date from the configuration, and if available, checks if it is older than 120 days compared to the current date.
-// If the last modified date is older than 120 days, the function updates the start date to 120 days before the last modified date and sets the restart flag to true.
-// The function then constructs the URL for fetching the CVE data from the NVD API based on the results per page, last modified start date, and current date.
-// It makes an HTTP GET request to the constructed URL, including the NVD API key if available.
-// The function reads the response body and unmarshals it into a struct representing the NVD statistics.
-// It calculates the number of pages required to fetch all the CVE data based on the total number of results and the number of results per page.
-// The function uses a progress bar to track the progress of downloading and processing the CVE data.
-// It spawns multiple goroutines to download and process the CVE data concurrently, with a maximum number of goroutines based on the availability of the NVD API key.
-// After downloading and processing each page of CVE data, the function waits for 35 seconds before proceeding to the next page.
-// Finally, the function updates the last modified date in the configuration and, if the restart flag is set, recursively calls itself to continue updating the NVD data.
-// If any error occurs during the update process, the function logs the error and returns it.
+// Update syncs CVEs modified since the NVD watermark, in windows of at most 120 days.
+// The watermark moves only after every window succeeded.
 func Update(db *bun.DB, db_config *bun.DB) error {
+	return sourcesync.Run(db, knowledge.SourceNVD, func() (time.Time, error) {
+		return syncWindows(db, db_config)
+	})
+}
+
+// syncWindows returns the end of the last window, or the zero time if any window failed.
+func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	log.Println("Start updating NVD")
 
-	// Get last date from config
-	conf, err := getLastNVDChangeNumber(db_config)
-	lastModStartDate := conf.NvdLast
+	since, err := sourcesync.Watermark(db, knowledge.SourceNVD)
 	if err != nil {
-		log.Println("Can't get last date from config", err)
-		return err
+		return time.Time{}, err
 	}
+	since = since.UTC()
+	log.Println("Last date: ", since)
 
-	log.Println("Last date: ", lastModStartDate)
-
-	// Get current date
-	now := time.Now()
-	now_string := now.Format("2006-01-02T15:04:05.000Z")
-
-	restart := false
-
-	since := lastModStartDate.Format("2006-01-02T15:04:05.000Z")
-	// Check if current date isn't older than 120 days compared to lastModStartDate
-	diff := time.Since(lastModStartDate)
-	if diff.Hours() > 24*120 {
-		log.Println("lastModStartDate is older than 120 days compared to current date")
-		now = lastModStartDate.AddDate(0, 0, 120)
-		now_string = now.Format("2006-01-02T15:04:05.000Z")
-		restart = true
-	}
-
-	apiKey, ok := os.LookupEnv("NVD_API_KEY")
-	if !ok || apiKey == "" {
+	apiKey := os.Getenv("NVD_API_KEY")
+	if apiKey == "" {
 		log.Println("NVD_API_KEY environment variable not set")
-		apiKey = ""
 	}
 
-	element_page := 2000
 	maxRequests := 50
+	rateLimiterSleep := 30 * time.Second / time.Duration(maxRequests)
 	if apiKey == "" {
 		maxRequests = 5
+		rateLimiterSleep = 60 * time.Second / time.Duration(maxRequests)
 	}
-
-	urlTemplate := "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
-
-	var result NVDStats
-	err = fetchNVDStats(urlTemplate, element_page, since, now_string, apiKey, &result)
-	if err != nil {
-		log.Println("Failed to fetch NVD stats", err)
-		return err
-	}
-
-	log.Printf("Total CVEs: %d", result.TotalResults)
-
-	n_page := int(result.TotalResults / element_page)
-	if result.TotalResults%element_page != 0 {
-		n_page++
-	}
-
-	bar := progressbar.Default(int64(n_page))
-
-	var wg sync.WaitGroup
 	rateLimiter := make(chan struct{}, maxRequests)
-
-	// Simplify rate limiter logic
-	rateLimiterSleep := 60 * time.Second / time.Duration(maxRequests)
-	if apiKey != "" {
-		rateLimiterSleep = 30 * time.Second / time.Duration(maxRequests)
-	}
-
-	// Fill rate limiter tokens
+	stop := make(chan struct{})
+	defer close(stop)
 	go func() {
 		for {
-			rateLimiter <- struct{}{}
-			time.Sleep(rateLimiterSleep)
+			select {
+			case rateLimiter <- struct{}{}:
+				time.Sleep(rateLimiterSleep)
+			case <-stop:
+				return
+			}
 		}
 	}()
 
-	for i := 0; i < n_page; i++ {
+	for {
+		end := time.Now().UTC()
+		hasLaterWindow := time.Since(since).Hours() > 24*120
+		if hasLaterWindow {
+			log.Println("lastModStartDate is older than 120 days compared to current date")
+			end = since.AddDate(0, 0, 120)
+		}
+
+		if err := syncWindow(db, since, end, apiKey, rateLimiter); err != nil {
+			return time.Time{}, err
+		}
+		if !hasLaterWindow {
+			if err := sourcesync.SetConfigLast(db_config, "nvd_last", end); err != nil {
+				return time.Time{}, err
+			}
+			return end, nil
+		}
+		since = end
+	}
+}
+
+// syncWindow fetches and stores every page of one modified-date window and reports all page failures.
+func syncWindow(db *bun.DB, since, end time.Time, apiKey string, rateLimiter chan struct{}) error {
+	const elementPage = 2000
+	sinceString := since.Format("2006-01-02T15:04:05.000Z")
+	endString := end.Format("2006-01-02T15:04:05.000Z")
+
+	var result NVDStats
+	if err := fetchNVDStats(apiURLTemplate, elementPage, sinceString, endString, apiKey, &result); err != nil {
+		return fmt.Errorf("fetch NVD stats: %w", err)
+	}
+	log.Printf("Total CVEs: %d", result.TotalResults)
+
+	nPage := result.TotalResults / elementPage
+	if result.TotalResults%elementPage != 0 {
+		nPage++
+	}
+	bar := progressbar.Default(int64(nPage))
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []error
+	for i := range nPage {
 		wg.Add(1)
-		go func(wg *sync.WaitGroup, i int) {
+		go func(i int) {
 			defer wg.Done()
 			defer bar.Add(1)
 
-			vulns, err := downloadBatch(i, element_page, urlTemplate, since, now_string, apiKey, rateLimiter)
-			if err != nil {
-				log.Println(err)
-				return
+			if err := syncPage(db, i, elementPage, sinceString, endString, apiKey, rateLimiter); err != nil {
+				log.Printf("NVD page %d failed: %v", i, err)
+				mu.Lock()
+				failures = append(failures, fmt.Errorf("page %d: %w", i, err))
+				mu.Unlock()
 			}
-
-			// Step 1: Insert NVD records
-			pgsql.UpdateNvd(db, vulns)
-
-			// Step 2: Get UUIDs for inserted NVD records
-			nvdIds := make([]string, len(vulns))
-			for j, v := range vulns {
-				nvdIds[j] = v.NVDId
-			}
-			nvdIdToUUID, err := pgsql.GetNvdUUIDsByNvdIds(db, nvdIds)
-			if err != nil {
-				log.Printf("Error getting NVD UUIDs: %v", err)
-				return
-			}
-
-			// Step 3: Extract and insert package-vulnerability relationships with FK
-			pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
-			if len(pkgVulns) > 0 {
-				if err := pgsql.BatchInsertNvdPackageVulnerabilities(db, pkgVulns); err != nil {
-					log.Printf("Error inserting package vulnerabilities from NVD: %v", err)
-				}
-			}
-		}(&wg, i)
+		}(i)
 	}
-
 	wg.Wait()
 
-	conf.NvdLast = now
-	err = setLastNVDChangeNumber(db_config, conf)
+	return errors.Join(failures...)
+}
+
+// syncPage stores one NVD page and its package links.
+func syncPage(db *bun.DB, i, elementPage int, since, end, apiKey string, rateLimiter chan struct{}) error {
+	vulns, err := downloadBatch(i, elementPage, apiURLTemplate, since, end, apiKey, rateLimiter)
 	if err != nil {
-		log.Println("Can't set last date in config", err)
 		return err
 	}
 
-	if restart {
-		err = Update(db, db_config)
-		if err != nil {
-			log.Println(err)
-			return err
-		}
+	if err := pgsql.UpdateNvd(db, vulns); err != nil {
+		return err
 	}
 
+	nvdIds := make([]string, len(vulns))
+	for j, v := range vulns {
+		nvdIds[j] = v.NVDId
+	}
+	nvdIdToUUID, err := pgsql.GetNvdUUIDsByNvdIds(db, nvdIds)
+	if err != nil {
+		return fmt.Errorf("get NVD UUIDs: %w", err)
+	}
+
+	pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
+	if err := pgsql.BatchInsertNvdPackageVulnerabilities(db, pkgVulns); err != nil {
+		return fmt.Errorf("insert package links: %w", err)
+	}
 	return nil
 }
 

@@ -6,7 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
@@ -17,7 +16,7 @@ const deleteChunkSize = 10000
 
 // Filter removes the in-scope OSV advisories whose published timestamp
 // postdates the asof day from the live knowledge database, and stamps
-// osv_last with asof. Unlike Update, which rebuilds advisories from a dated
+// osv_last and the OSV watermark with asof. Unlike Update, which rebuilds advisories from a dated
 // checkout, Filter is a membership-only approximation: advisories published
 // on or before asof survive with their CURRENT content (affected ranges,
 // severity, aliases as of the base state), and advisories that were live at
@@ -80,7 +79,7 @@ func Filter(db *bun.DB, configDB *bun.DB, asof time.Time) error {
 		}
 	}
 
-	return osv.SetLastOSVSync(configDB, asof)
+	return stampOSVSync(db, configDB, asof)
 }
 
 // idsPublishedAfter returns the ids of the rows whose published timestamp

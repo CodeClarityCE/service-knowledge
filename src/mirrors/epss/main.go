@@ -2,15 +2,24 @@ package epss
 
 import (
 	"log"
+	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
 
 // Update is a function that updates the CWEs in the knowledge database graph.
 // It downloads the CWEs from the graph, and then updates them.
 func Update(db *bun.DB) error {
-	return UpdateAsOf(db, "")
+	return sourcesync.Run(db, knowledge.SourceEPSS, func() (time.Time, error) {
+		syncedAt := time.Now()
+		if err := UpdateAsOf(db, ""); err != nil {
+			return time.Time{}, err
+		}
+		return syncedAt, nil
+	})
 }
 
 // UpdateAsOf imports the EPSS scores published on the given date (YYYY-MM-DD).

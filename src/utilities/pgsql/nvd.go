@@ -9,61 +9,52 @@ import (
 	"github.com/uptrace/bun"
 )
 
-func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
-	// Start a transaction
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			tx.Rollback()
-			panic(p)
-		} else if err != nil {
-			tx.Rollback()
-		} else {
-			tx.Commit()
+// nvdItemsToWrite drops rejected and deferred items and keeps the last copy of each CVE,
+// because one upsert cannot touch the same row twice.
+func nvdItemsToWrite(nvd []knowledge.NVDItem) []knowledge.NVDItem {
+	seen := make(map[string]int, len(nvd))
+	items := make([]knowledge.NVDItem, 0, len(nvd))
+
+	for _, item := range nvd {
+		if item.VulnStatus == "Rejected" || item.VulnStatus == "Deferred" {
+			continue
 		}
-	}()
+		if idx, exists := seen[item.NVDId]; exists {
+			items[idx] = item
+		} else {
+			seen[item.NVDId] = len(items)
+			items = append(items, item)
+		}
+	}
+
+	return items
+}
+
+// UpdateNvd upserts a page of NVD items on nvd_id in one transaction.
+func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
+	items := nvdItemsToWrite(nvd)
+	if len(items) == 0 {
+		return nil
+	}
 
 	ctx := context.Background()
 
-	// Batch insert and update
-	var newItems []knowledge.NVDItem
-	var existingItems []knowledge.NVDItem
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for NVD update: %w", err)
+	}
+	defer tx.Rollback()
 
-	for _, vuln := range nvd {
-		// Skip items that are rejected or deferred
-		// This is to avoid inserting or updating items that are not relevant
-		// in the NVD database.
-		if vuln.VulnStatus == "Rejected" || vuln.VulnStatus == "Deferred" {
-			continue
-		}
-
-		exists, err := tx.NewSelect().Model(&vuln).Where("nvd_id = ?", vuln.NVDId).Exists(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to check existence for NVD item %v: %w", vuln.NVDId, err)
-		}
-
-		if !exists {
-			newItems = append(newItems, vuln)
-		} else {
-			existingItems = append(existingItems, vuln)
-		}
+	_, err = tx.NewInsert().
+		Model(&items).
+		On("CONFLICT (nvd_id) DO UPDATE SET \"sourceIdentifier\" = EXCLUDED.\"sourceIdentifier\", published = EXCLUDED.published, \"lastModified\" = EXCLUDED.\"lastModified\", \"vulnStatus\" = EXCLUDED.\"vulnStatus\", descriptions = EXCLUDED.descriptions, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, metrics = EXCLUDED.metrics, weaknesses = EXCLUDED.weaknesses, configurations = EXCLUDED.configurations, \"affectedFlattened\" = EXCLUDED.\"affectedFlattened\", affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\"").
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to upsert %d NVD items: %w", len(items), err)
 	}
 
-	if len(newItems) > 0 {
-		_, err = tx.NewInsert().Model(&newItems).Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to batch insert NVD items: %w", err)
-		}
-	}
-
-	if len(existingItems) > 0 {
-		_, err = tx.NewUpdate().Model(&existingItems).WherePK().Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to batch update NVD items: %w", err)
-		}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit NVD update: %w", err)
 	}
 
 	return nil
