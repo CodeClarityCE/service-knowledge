@@ -22,6 +22,9 @@ import (
 // apiURLTemplate is the NVD CVE API, with page size, start index and modified-date window.
 var apiURLTemplate = "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
 
+// fullURLTemplate is the same API with no date window, so every CVE is returned.
+var fullURLTemplate = "https://services.nvd.nist.gov/rest/json/cves/2.0/?resultsPerPage=%d&startIndex=%d"
+
 type NVDStats struct {
 	TotalResults int `json:"totalResults"`
 }
@@ -49,6 +52,7 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	}
 	since = since.UTC()
 	log.Println("Last date: ", since)
+	fullFetch := since.IsZero()
 
 	apiKey := os.Getenv("NVD_API_KEY")
 	if apiKey == "" {
@@ -75,6 +79,10 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		}
 	}()
 
+	if fullFetch {
+		return syncFull(db, db_config, apiKey, rateLimiter)
+	}
+
 	for {
 		end := time.Now().UTC()
 		hasLaterWindow := time.Since(since).Hours() > 24*120
@@ -83,7 +91,7 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 			end = since.AddDate(0, 0, 120)
 		}
 
-		if err := syncWindow(db, since, end, apiKey, rateLimiter); err != nil {
+		if _, _, err := syncPages(db, apiURLTemplateFor(since, end), apiKey, rateLimiter); err != nil {
 			return time.Time{}, err
 		}
 		if !hasLaterWindow {
@@ -99,15 +107,54 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 	}
 }
 
-// syncWindow fetches and stores every page of one modified-date window and reports all page failures.
-func syncWindow(db *bun.DB, since, end time.Time, apiKey string, rateLimiter chan struct{}) error {
-	const elementPage = 2000
+// syncFull fetches every CVE, then retires stored records NVD no longer publishes.
+func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan struct{}) (time.Time, error) {
+	started := time.Now().UTC()
+	log.Println("No NVD watermark, performing a full fetch")
+
+	total, snapshot, err := syncPages(db, fullURLTemplateFor, apiKey, rateLimiter)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(snapshot) < total {
+		return time.Time{}, fmt.Errorf("incomplete NVD fetch: %d of %d records", len(snapshot), total)
+	}
+
+	if err := pgsql.RetireStoredRejectedNvd(db); err != nil {
+		return time.Time{}, err
+	}
+	if err := pgsql.ReconcileNvd(db, snapshot, started); err != nil {
+		return time.Time{}, err
+	}
+	if err := sourcesync.SetConfigLast(db_config, "nvd_last", started); err != nil {
+		return time.Time{}, err
+	}
+	return started, nil
+}
+
+// pageURL builds the request for one result page.
+type pageURL func(elementPage, startIndex int) string
+
+func apiURLTemplateFor(since, end time.Time) pageURL {
 	sinceString := since.Format("2006-01-02T15:04:05.000Z")
 	endString := end.Format("2006-01-02T15:04:05.000Z")
+	return func(elementPage, startIndex int) string {
+		return fmt.Sprintf(apiURLTemplate, elementPage, startIndex, sinceString, endString)
+	}
+}
+
+func fullURLTemplateFor(elementPage, startIndex int) string {
+	return fmt.Sprintf(fullURLTemplate, elementPage, startIndex)
+}
+
+// syncPages fetches and stores every page of one query and reports all page failures.
+// It returns the upstream total and the distinct ids received.
+func syncPages(db *bun.DB, urlFor pageURL, apiKey string, rateLimiter chan struct{}) (int, []string, error) {
+	const elementPage = 2000
 
 	var result NVDStats
-	if err := fetchNVDStats(apiURLTemplate, elementPage, sinceString, endString, apiKey, &result); err != nil {
-		return fmt.Errorf("fetch NVD stats: %w", err)
+	if err := fetchNVDStats(urlFor(elementPage, 0), apiKey, &result); err != nil {
+		return 0, nil, fmt.Errorf("fetch NVD stats: %w", err)
 	}
 	log.Printf("Total CVEs: %d", result.TotalResults)
 
@@ -120,34 +167,48 @@ func syncWindow(db *bun.DB, since, end time.Time, apiKey string, rateLimiter cha
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failures []error
+	seen := make(map[string]struct{}, result.TotalResults)
 	for i := range nPage {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			defer bar.Add(1)
 
-			if err := syncPage(db, i, elementPage, sinceString, endString, apiKey, rateLimiter); err != nil {
+			ids, err := syncPage(db, urlFor(elementPage, i*elementPage), apiKey, rateLimiter)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
 				log.Printf("NVD page %d failed: %v", i, err)
-				mu.Lock()
 				failures = append(failures, fmt.Errorf("page %d: %w", i, err))
-				mu.Unlock()
+				return
+			}
+			for _, id := range ids {
+				seen[id] = struct{}{}
 			}
 		}(i)
 	}
 	wg.Wait()
 
-	return errors.Join(failures...)
+	if err := errors.Join(failures...); err != nil {
+		return 0, nil, err
+	}
+	snapshot := make([]string, 0, len(seen))
+	for id := range seen {
+		snapshot = append(snapshot, id)
+	}
+	return result.TotalResults, snapshot, nil
 }
 
 // syncPage stores one NVD page and its package links.
-func syncPage(db *bun.DB, i, elementPage int, since, end, apiKey string, rateLimiter chan struct{}) error {
-	vulns, err := downloadBatch(i, elementPage, apiURLTemplate, since, end, apiKey, rateLimiter)
+// It returns the id of every record on the page, including those not written.
+func syncPage(db *bun.DB, pageRequest, apiKey string, rateLimiter chan struct{}) ([]string, error) {
+	vulns, err := downloadBatch(pageRequest, apiKey, rateLimiter)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := pgsql.UpdateNvd(db, vulns); err != nil {
-		return err
+		return nil, err
 	}
 
 	nvdIds := make([]string, len(vulns))
@@ -156,7 +217,7 @@ func syncPage(db *bun.DB, i, elementPage int, since, end, apiKey string, rateLim
 	}
 	nvdIdToUUID, err := pgsql.GetNvdUUIDsByNvdIds(db, nvdIds)
 	if err != nil {
-		return fmt.Errorf("get NVD UUIDs: %w", err)
+		return nil, fmt.Errorf("get NVD UUIDs: %w", err)
 	}
 
 	writtenUUIDs := make([]uuid.UUID, 0, len(vulns))
@@ -167,9 +228,9 @@ func syncPage(db *bun.DB, i, elementPage int, since, end, apiKey string, rateLim
 	}
 	pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
 	if err := pgsql.ReplaceNvdPackageLinks(db, writtenUUIDs, pkgVulns); err != nil {
-		return fmt.Errorf("replace package links: %w", err)
+		return nil, fmt.Errorf("replace package links: %w", err)
 	}
-	return nil
+	return nvdIds, nil
 }
 
 // nvdRecordKeepsLinks reports whether a record's package links follow this page.
@@ -178,8 +239,7 @@ func nvdRecordKeepsLinks(item knowledge.NVDItem) bool {
 	return item.VulnStatus != "Rejected" && item.VulnStatus != "Deferred"
 }
 
-func fetchNVDStats(urlTemplate string, element_page int, since, now_string, apiKey string, result *NVDStats) error {
-	url := fmt.Sprintf(urlTemplate, element_page, 0, since, now_string)
+func fetchNVDStats(url, apiKey string, result *NVDStats) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
@@ -254,10 +314,7 @@ func extractPackageVulnerabilitiesFromNVD(nvdItems []knowledge.NVDItem, nvdIdToU
 	return pkgVulns
 }
 
-func downloadBatch(i, element_page int, urlTemplate, since, now_string, apiKey string, rateLimiter chan struct{}) ([]knowledge.NVDItem, error) {
-	index := i * element_page
-	url := fmt.Sprintf(urlTemplate, element_page, index, since, now_string)
-
+func downloadBatch(url, apiKey string, rateLimiter chan struct{}) ([]knowledge.NVDItem, error) {
 	var resp *http.Response
 	var err error
 	var retries int
