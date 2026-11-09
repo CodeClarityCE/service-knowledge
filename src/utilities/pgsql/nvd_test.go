@@ -23,8 +23,8 @@ CREATE TABLE nvd (
 	id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
 	nvd_id varchar NOT NULL,
 	"sourceIdentifier" varchar,
-	published varchar,
-	"lastModified" varchar,
+	published timestamptz,
+	"lastModified" timestamptz,
 	"vulnStatus" varchar,
 	descriptions jsonb,
 	metrics jsonb,
@@ -34,7 +34,9 @@ CREATE TABLE nvd (
 	affected jsonb,
 	"references" jsonb,
 	vlai_score varchar,
-	vlai_confidence double precision
+	vlai_confidence double precision,
+	retired_reason varchar,
+	retired_at timestamptz
 );
 CREATE UNIQUE INDEX nvd_nvd_id_idx ON nvd (nvd_id);`
 
@@ -57,6 +59,12 @@ func openTestDB(name string) *sql.DB {
 
 // setupNvdDB creates a throwaway database holding only the nvd table and drops it after the test.
 func setupNvdDB(t *testing.T) *bun.DB {
+	t.Helper()
+	return setupTestDB(t, nvdTestSchema)
+}
+
+// setupTestDB creates a throwaway database holding the given schema and drops it after the test.
+func setupTestDB(t *testing.T, schema string) *bun.DB {
 	t.Helper()
 	ctx := context.Background()
 
@@ -82,8 +90,8 @@ func setupNvdDB(t *testing.T) *bun.DB {
 		admin.Close()
 	})
 
-	if _, err := db.ExecContext(ctx, nvdTestSchema); err != nil {
-		t.Fatalf("create nvd table: %v", err)
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		t.Fatalf("create test schema: %v", err)
 	}
 	return db
 }
@@ -127,13 +135,13 @@ func TestUpdateNvdPageMixingNewAndExistingCves(t *testing.T) {
 	}
 
 	updated := readNvd(t, db, "CVE-2024-0001")
-	if updated.VulnStatus != "Analyzed" || updated.LastModified != "2024-06-01" {
+	if updated.VulnStatus != "Analyzed" || updated.LastModified != "2024-06-01T00:00:00Z" {
 		t.Errorf("existing CVE was not updated: status %q, lastModified %q", updated.VulnStatus, updated.LastModified)
 	}
 	if updated.Id != original.Id {
 		t.Errorf("existing CVE changed id from %s to %s, which would orphan its package links", original.Id, updated.Id)
 	}
-	if added := readNvd(t, db, "CVE-2024-0002"); added.LastModified != "2024-06-02" {
+	if added := readNvd(t, db, "CVE-2024-0002"); added.LastModified != "2024-06-02T00:00:00Z" {
 		t.Errorf("new CVE lastModified = %q", added.LastModified)
 	}
 	if got := countNvd(t, db); got != 2 {
