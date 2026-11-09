@@ -9,7 +9,7 @@ func TestRunAllRunsEverySourceAndJoinsFailures(t *testing.T) {
 	first, third := errors.New("first failed"), errors.New("third failed")
 	var ran []string
 
-	err := runAll([]updateStep{
+	err := runAll([]func() error{
 		func() error { ran = append(ran, "a"); return first },
 		func() error { ran = append(ran, "b"); return nil },
 		func() error { ran = append(ran, "c"); return third },
@@ -24,7 +24,7 @@ func TestRunAllRunsEverySourceAndJoinsFailures(t *testing.T) {
 }
 
 func TestRunAllSucceedsWhenEverySourceSucceeds(t *testing.T) {
-	err := runAll([]updateStep{func() error { return nil }})
+	err := runAll([]func() error{func() error { return nil }})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

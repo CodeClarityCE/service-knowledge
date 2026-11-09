@@ -19,6 +19,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
@@ -140,7 +141,7 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error 
 	// pgsql.SetCodeClarityDB's doc comment).
 	pgsql.SetCodeClarityDB(codeClarityDB)
 
-	return runAll([]updateStep{
+	return runAll([]func() error{
 		func() error { return licenses.Update(knowledgeDB) },
 		func() error { return epss.Update(knowledgeDB) },
 		func() error { return osv.Update(knowledgeDB, configDB) },
@@ -152,15 +153,12 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error 
 	})
 }
 
-// updateStep updates one part of the knowledge database.
-type updateStep func() error
-
 // runAll runs every step, regardless of earlier failures, and joins their errors.
-func runAll(steps []updateStep) error {
+func runAll(steps []func() error) error {
 	var failures []error
 	for _, step := range steps {
 		if err := step(); err != nil {
-			log.Printf("Knowledge update step failed: %v", err)
+			logger.WithFields(logrus.Fields{"error": err.Error()}).Error("Knowledge update step failed")
 			failures = append(failures, err)
 		}
 	}
