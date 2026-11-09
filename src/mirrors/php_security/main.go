@@ -58,7 +58,7 @@ func store(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvisory, syncedAt tim
 	for i, advisory := range advisories {
 		ids[i] = advisory.AdvisoryId
 	}
-	if err := pgsql.AdoptPackagistFriendsOfPhp(db, ids); err != nil {
+	if err := pgsql.AdoptPackagistFriendsOfPHP(db, ids); err != nil {
 		return err
 	}
 	for start := 0; start < len(advisories); start += upsertChunkSize {
@@ -67,7 +67,7 @@ func store(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvisory, syncedAt tim
 		}
 	}
 
-	uuids, err := pgsql.GetFriendsOfPhpUUIDsByAdvisoryIds(db, ids)
+	uuids, err := pgsql.GetFriendsOfPHPUUIDsByAdvisoryIds(db, ids)
 	if err != nil {
 		return fmt.Errorf("read FriendsOfPHP ids: %w", err)
 	}
@@ -85,13 +85,13 @@ func store(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvisory, syncedAt tim
 			FriendsOfPhpId:   &id,
 		})
 	}
-	if err := pgsql.ReplaceFriendsOfPhpPackageLinks(db, stored, links); err != nil {
+	if err := pgsql.ReplaceFriendsOfPHPPackageLinks(db, stored, links); err != nil {
 		return fmt.Errorf("replace FriendsOfPHP package links: %w", err)
 	}
-	if err := pgsql.RetirePackagistFriendsOfPhp(db, syncedAt); err != nil {
+	if err := pgsql.RetirePackagistFriendsOfPHP(db, syncedAt); err != nil {
 		return err
 	}
-	return pgsql.ReconcileFriendsOfPhp(db, ids, syncedAt)
+	return pgsql.ReconcileFriendsOfPHP(db, ids, syncedAt)
 }
 
 // upsertChunkSize bounds the advisories in one insert statement.

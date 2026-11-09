@@ -13,7 +13,7 @@ import (
 // UpdateFriendsOfPHP updates or inserts a FriendsOfPHP advisory using an efficient upsert operation
 func UpdateFriendsOfPHP(db *bun.DB, advisory knowledge.FriendsOfPHPAdvisory) error {
 	advisories := []knowledge.FriendsOfPHPAdvisory{advisory}
-	normalizeFriendsOfPhpDates(advisories)
+	normalizeFriendsOfPHPDates(advisories)
 	advisory = advisories[0]
 	ctx := context.Background()
 
@@ -36,7 +36,7 @@ func BatchUpdateFriendsOfPHP(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvi
 		return nil
 	}
 
-	normalizeFriendsOfPhpDates(advisories)
+	normalizeFriendsOfPHPDates(advisories)
 	ctx := context.Background()
 
 	// Start a transaction for better performance and consistency
@@ -127,9 +127,9 @@ func GetAllFriendsOfPHP(db *bun.DB, limit, offset int) ([]knowledge.FriendsOfPHP
 	return advisories, nil
 }
 
-// GetFriendsOfPhpUUIDsByAdvisoryIds retrieves the internal UUIDs for a list of FriendsOfPHP advisory IDs.
+// GetFriendsOfPHPUUIDsByAdvisoryIds retrieves the internal UUIDs for a list of FriendsOfPHP advisory IDs.
 // Returns a map from advisory_id (string) to internal UUID.
-func GetFriendsOfPhpUUIDsByAdvisoryIds(db *bun.DB, advisoryIds []string) (map[string]uuid.UUID, error) {
+func GetFriendsOfPHPUUIDsByAdvisoryIds(db *bun.DB, advisoryIds []string) (map[string]uuid.UUID, error) {
 	if len(advisoryIds) == 0 {
 		return make(map[string]uuid.UUID), nil
 	}
@@ -165,9 +165,9 @@ const packagistRow = `advisory_id LIKE 'PKSA-%'`
 // packagistRepositoryPath is the repository advisory id a Packagist row's remote id names, or NULL for other sources.
 const packagistRepositoryPath = `CASE WHEN reference ~ '^[^/]+/[^/]+/[^/]+$' THEN regexp_replace(reference, '\.yaml$', '') END`
 
-// AdoptPackagistFriendsOfPhp renames Packagist rows that came from a repository advisory in the snapshot to that advisory's id.
+// AdoptPackagistFriendsOfPHP renames Packagist rows that came from a repository advisory in the snapshot to that advisory's id.
 // The rows keep their uuid and package links, and the next upsert replaces their content.
-func AdoptPackagistFriendsOfPhp(db *bun.DB, snapshotIDs []string) error {
+func AdoptPackagistFriendsOfPHP(db *bun.DB, snapshotIDs []string) error {
 	ctx := context.Background()
 	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		return eachChunk(snapshotIDs, func(chunk []string) error {
@@ -189,8 +189,8 @@ func AdoptPackagistFriendsOfPhp(db *bun.DB, snapshotIDs []string) error {
 	})
 }
 
-// RetirePackagistFriendsOfPhp retires the remaining active Packagist rows as removed and drops their package links.
-func RetirePackagistFriendsOfPhp(db *bun.DB, retiredAt time.Time) error {
+// RetirePackagistFriendsOfPHP retires the remaining active Packagist rows as removed and drops their package links.
+func RetirePackagistFriendsOfPHP(db *bun.DB, retiredAt time.Time) error {
 	err := retireAndUnlink(context.Background(), db, "friends_of_php", "friendsofphp_id", knowledge.RetiredRemoved, "?",
 		packagistRow+" AND retired_reason IS NULL", retiredAt)
 	if err != nil {
