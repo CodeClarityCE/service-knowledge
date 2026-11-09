@@ -24,6 +24,13 @@ func Update(db *bun.DB) error {
 		if err := pgsql.UpdateCWE(db, cwes); err != nil {
 			return time.Time{}, err
 		}
+		ids := make([]string, len(cwes))
+		for i, entry := range cwes {
+			ids[i] = entry.CWEId
+		}
+		if err := pgsql.ReconcileCWE(db, ids); err != nil {
+			return time.Time{}, err
+		}
 		return syncedAt, nil
 	})
 }

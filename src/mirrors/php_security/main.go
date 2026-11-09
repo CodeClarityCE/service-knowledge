@@ -193,11 +193,13 @@ func fetchBatchAdvisories(db *bun.DB, packages []string) error {
 		}
 
 		// Step 3: Create package_vulnerability records
+		advisoryUUIDs := make([]uuid.UUID, 0, len(advisoryIdToUUID))
+		for _, id := range advisoryIdToUUID {
+			advisoryUUIDs = append(advisoryUUIDs, id)
+		}
 		pkgVulns := extractPackageVulnerabilitiesFromFriendsOfPhp(advisoryInfos, advisoryIdToUUID)
-		if len(pkgVulns) > 0 {
-			if err := pgsql.BatchInsertFriendsOfPhpPackageVulnerabilities(db, pkgVulns); err != nil {
-				failures = append(failures, fmt.Errorf("insert package links: %w", err))
-			}
+		if err := pgsql.ReplaceFriendsOfPhpPackageLinks(db, advisoryUUIDs, pkgVulns); err != nil {
+			failures = append(failures, fmt.Errorf("replace package links: %w", err))
 		}
 	}
 

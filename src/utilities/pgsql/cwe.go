@@ -2,67 +2,40 @@ package pgsql
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
 
-// UpdateCWE updates the CWE (Common Weakness Enumeration) entries in the graph database.
-// It takes a graph driver and a slice of CWEEntry structs as input.
-// For each CWEEntry in the slice, it tries to update the corresponding document in the "CWE" vertex collection.
-// If the document exists and is successfully updated, it generates a changelog and creates a new document in the "REVISIONS" vertex collection.
-// If the document doesn't exist, it creates a new document in the "CWE" vertex collection.
-// Returns an error if any operation fails.
+// cweChunkSize bounds one upsert statement.
+const cweChunkSize = 500
+
+// cweColumns are the columns refreshed when a CWE already exists.
+var cweColumns = []string{
+	"name", "abstraction", "structure", "status", "description", "extended_description",
+	"related_weaknesses", "modes_of_introduction", "common_consequences", "detection_methods",
+	"potential_mitigations", "taxonomy_mappings", "likelihood_of_exploit", "observed_examples",
+	"alternate_terms", "affected_resources", "functional_areas", "categories", "applicable_platforms",
+}
+
+// UpdateCWE upserts CWE entries on cwe_id in one transaction.
 func UpdateCWE(db *bun.DB, cwes []knowledge.CWEEntry) error {
+	assignments := make([]string, len(cweColumns))
+	for i, column := range cweColumns {
+		assignments[i] = column + " = EXCLUDED." + column
+	}
+	conflict := "CONFLICT (cwe_id) DO UPDATE SET " + strings.Join(assignments, ", ")
+
 	ctx := context.Background()
-
-	to_insert := []knowledge.CWEEntry{}
-	to_update := []knowledge.CWEEntry{}
-
-	// Create a map to track existing CWE IDs in the database
-	existingCWEIds := make(map[string]bool)
-
-	// Fetch all existing CWE IDs in one query
-	var dbCWEIds []string
-	err := db.NewSelect().Model((*knowledge.CWEEntry)(nil)).Column("cwe_id").Scan(ctx, &dbCWEIds)
-	if err != nil {
-		return err
-	}
-
-	// Populate the map with existing CWE IDs
-	for _, cweId := range dbCWEIds {
-		existingCWEIds[cweId] = true
-	}
-
-	// Separate records into insert and update lists
-	for _, cwe_element := range cwes {
-		if existingCWEIds[cwe_element.CWEId] {
-			to_update = append(to_update, cwe_element)
-		} else {
-			to_insert = append(to_insert, cwe_element)
+	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		for start := 0; start < len(cwes); start += cweChunkSize {
+			chunk := cwes[start:min(start+cweChunkSize, len(cwes))]
+			if _, err := tx.NewInsert().Model(&chunk).On(conflict).Exec(ctx); err != nil {
+				return fmt.Errorf("upsert %d CWE entries: %w", len(chunk), err)
+			}
 		}
-	}
-
-	// Bulk insert
-	if len(to_insert) > 0 {
-		_, err := db.NewInsert().Model(&to_insert).Exec(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	if len(to_update) > 0 {
-		// Bulk update
-		_, err := db.NewUpdate().
-			Model(&to_update).
-			Where("c.cwe_id = _data.cwe_id").
-			Bulk().
-			Exec(ctx)
-		if err != nil {
-			return err
-		}
-
-	}
-
-	return nil
+		return nil
+	})
 }

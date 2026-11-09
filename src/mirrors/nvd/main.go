@@ -87,6 +87,9 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 			return time.Time{}, err
 		}
 		if !hasLaterWindow {
+			if err := pgsql.RetireStoredRejectedNvd(db); err != nil {
+				return time.Time{}, err
+			}
 			if err := sourcesync.SetConfigLast(db_config, "nvd_last", end); err != nil {
 				return time.Time{}, err
 			}
@@ -156,11 +159,23 @@ func syncPage(db *bun.DB, i, elementPage int, since, end, apiKey string, rateLim
 		return fmt.Errorf("get NVD UUIDs: %w", err)
 	}
 
+	writtenUUIDs := make([]uuid.UUID, 0, len(vulns))
+	for _, v := range vulns {
+		if id, ok := nvdIdToUUID[v.NVDId]; ok && nvdRecordKeepsLinks(v) {
+			writtenUUIDs = append(writtenUUIDs, id)
+		}
+	}
 	pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
-	if err := pgsql.BatchInsertNvdPackageVulnerabilities(db, pkgVulns); err != nil {
-		return fmt.Errorf("insert package links: %w", err)
+	if err := pgsql.ReplaceNvdPackageLinks(db, writtenUUIDs, pkgVulns); err != nil {
+		return fmt.Errorf("replace package links: %w", err)
 	}
 	return nil
+}
+
+// nvdRecordKeepsLinks reports whether a record's package links follow this page.
+// Rejected records are retired and deferred records are not written.
+func nvdRecordKeepsLinks(item knowledge.NVDItem) bool {
+	return item.VulnStatus != "Rejected" && item.VulnStatus != "Deferred"
 }
 
 func fetchNVDStats(urlTemplate string, element_page int, since, now_string, apiKey string, result *NVDStats) error {
@@ -205,6 +220,10 @@ func extractPackageVulnerabilitiesFromNVD(nvdItems []knowledge.NVDItem, nvdIdToU
 	seen := make(map[string]bool) // Deduplicate within batch
 
 	for _, nvd := range nvdItems {
+		if !nvdRecordKeepsLinks(nvd) {
+			continue
+		}
+
 		// Look up the UUID for this NVD record
 		nvdUUID, ok := nvdIdToUUID[nvd.NVDId]
 		if !ok {

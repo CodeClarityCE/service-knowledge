@@ -30,18 +30,22 @@ func UpdateAsOf(db *bun.DB, date string) error {
 	if err != nil {
 		return err
 	}
-	err = pgsql.UpdateEPSS(db, epss)
-	if err != nil {
+	if err := pgsql.UpdateEPSS(db, epss); err != nil {
 		return err
 	}
-	return nil
+	// Only a fully parsed file reaches this point.
+	cves := make([]string, len(epss))
+	for i, score := range epss {
+		cves[i] = score.CVE
+	}
+	return pgsql.ReconcileEPSS(db, cves)
 }
 
 // epssURL returns the download URL for the EPSS scores file: the current file
 // when date is empty, or the dated snapshot (YYYY-MM-DD) otherwise.
 func epssURL(date string) string {
 	if date == "" {
-		return "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+		return baseURL + "epss_scores-current.csv.gz"
 	}
-	return "https://epss.empiricalsecurity.com/epss_scores-" + date + ".csv.gz"
+	return baseURL + "epss_scores-" + date + ".csv.gz"
 }

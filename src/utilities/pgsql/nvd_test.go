@@ -38,7 +38,16 @@ CREATE TABLE nvd (
 	retired_reason varchar,
 	retired_at timestamptz
 );
-CREATE UNIQUE INDEX nvd_nvd_id_idx ON nvd (nvd_id);`
+CREATE UNIQUE INDEX nvd_nvd_id_idx ON nvd (nvd_id);
+CREATE TABLE package_vulnerability (
+	id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+	package_name varchar NOT NULL, package_ecosystem varchar NOT NULL,
+	osv_id uuid, nvd_id uuid, friendsofphp_id uuid, gcve_id uuid,
+	created_at timestamptz DEFAULT now()
+);
+CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, osv_id) WHERE osv_id IS NOT NULL;
+CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, nvd_id) WHERE nvd_id IS NOT NULL;
+CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, gcve_id) WHERE gcve_id IS NOT NULL;`
 
 func envOr(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {

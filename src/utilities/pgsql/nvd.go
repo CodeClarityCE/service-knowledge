@@ -32,11 +32,22 @@ func nvdItemsToWrite(nvd []knowledge.NVDItem) []knowledge.NVDItem {
 
 // UpdateNvd upserts a page of NVD items on nvd_id in one transaction.
 func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
+	var rejected []knowledge.NVDItem
+	for _, item := range nvd {
+		if item.VulnStatus == "Rejected" {
+			rejected = append(rejected, item)
+		}
+	}
+	if err := RetireRejectedNvd(db, rejected); err != nil {
+		return err
+	}
+
 	items := nvdItemsToWrite(nvd)
 	if len(items) == 0 {
 		return nil
 	}
 
+	normalizeNvdDates(items)
 	ctx := context.Background()
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -51,6 +62,14 @@ func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to upsert %d NVD items: %w", len(items), err)
+	}
+
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.NVDId
+	}
+	if err := clearRetirement(ctx, tx, "nvd", "nvd_id", ids); err != nil {
+		return fmt.Errorf("reactivate NVD items: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {

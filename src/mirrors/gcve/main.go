@@ -79,6 +79,10 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		return time.Time{}, err
 	}
 
+	if err := pgsql.RetireStoredRejectedGcve(db); err != nil {
+		return time.Time{}, err
+	}
+
 	if err := sourcesync.SetConfigLast(db_config, "gcve_last", syncedAt); err != nil {
 		return time.Time{}, err
 	}
@@ -170,9 +174,8 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) error {
 			parseErrors++
 			continue
 		}
-		if item == nil {
+		if item.State == "REJECTED" {
 			rejected++
-			continue // Skip REJECTED records
 		}
 
 		batch = append(batch, *item)
@@ -269,11 +272,6 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 		return nil, err
 	}
 
-	// Skip REJECTED records
-	if raw.CveMetadata.State == "REJECTED" {
-		return nil, nil
-	}
-
 	item := &knowledge.GCVEItem{
 		GCVEId:        cveToGCVEId(raw.CveMetadata.CveId),
 		CVEId:         raw.CveMetadata.CveId,
@@ -282,6 +280,11 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 		DatePublished: raw.CveMetadata.DatePublished,
 		DateUpdated:   raw.CveMetadata.DateUpdated,
 		AssignerOrgId: raw.CveMetadata.AssignerOrgId,
+	}
+
+	// Only the identity and dates of a rejected record are used.
+	if item.State == "REJECTED" {
+		return item, nil
 	}
 
 	// Parse CNA container
@@ -432,7 +435,20 @@ func buildAffectedFlattened(affected []knowledge.GCVEAffected) []knowledge.GCVEP
 }
 
 // processBatch inserts GCVE records and creates package-vulnerability links.
-func processBatch(db *bun.DB, batch []knowledge.GCVEItem) error {
+func processBatch(db *bun.DB, items []knowledge.GCVEItem) error {
+	batch := make([]knowledge.GCVEItem, 0, len(items))
+	var rejected []knowledge.GCVEItem
+	for _, item := range items {
+		if item.State == "REJECTED" {
+			rejected = append(rejected, item)
+		} else {
+			batch = append(batch, item)
+		}
+	}
+	if err := pgsql.RetireRejectedGcve(db, rejected); err != nil {
+		return err
+	}
+
 	// Step 1: Upsert GCVE records
 	if err := pgsql.BatchUpdateGcve(db, batch); err != nil {
 		return fmt.Errorf("batch update failed: %w", err)
@@ -450,11 +466,13 @@ func processBatch(db *bun.DB, batch []knowledge.GCVEItem) error {
 	}
 
 	// Step 3: Extract and insert package-vulnerability relationships
+	advisoryUUIDs := make([]uuid.UUID, 0, len(gcveIdToUUID))
+	for _, id := range gcveIdToUUID {
+		advisoryUUIDs = append(advisoryUUIDs, id)
+	}
 	pkgVulns := extractPackageVulnerabilities(batch, gcveIdToUUID)
-	if len(pkgVulns) > 0 {
-		if err := pgsql.BatchInsertGcvePackageVulnerabilities(db, pkgVulns); err != nil {
-			return fmt.Errorf("insert package links: %w", err)
-		}
+	if err := pgsql.ReplaceGcvePackageLinks(db, advisoryUUIDs, pkgVulns); err != nil {
+		return fmt.Errorf("replace package links: %w", err)
 	}
 
 	return nil
@@ -566,10 +584,6 @@ func storeRecentRecords(db *bun.DB, records []json.RawMessage) error {
 			parseErrors++
 			continue
 		}
-		if item == nil {
-			continue // Skip REJECTED records
-		}
-
 		batch = append(batch, *item)
 
 		if len(batch) >= batchSize {

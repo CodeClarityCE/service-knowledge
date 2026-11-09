@@ -11,6 +11,9 @@ import (
 
 // UpdateFriendsOfPHP updates or inserts a FriendsOfPHP advisory using an efficient upsert operation
 func UpdateFriendsOfPHP(db *bun.DB, advisory knowledge.FriendsOfPHPAdvisory) error {
+	advisories := []knowledge.FriendsOfPHPAdvisory{advisory}
+	normalizeFriendsOfPhpDates(advisories)
+	advisory = advisories[0]
 	ctx := context.Background()
 
 	// Use upsert (INSERT ... ON CONFLICT) for better performance and atomicity
@@ -32,6 +35,7 @@ func BatchUpdateFriendsOfPHP(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvi
 		return nil
 	}
 
+	normalizeFriendsOfPhpDates(advisories)
 	ctx := context.Background()
 
 	// Start a transaction for better performance and consistency
