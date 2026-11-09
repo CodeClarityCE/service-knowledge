@@ -223,7 +223,7 @@ func watermark(t *testing.T, db *bun.DB) time.Time {
 	return value
 }
 
-func TestEnrichmentRetrySkipsBulkAndAdvancesFromRunStart(t *testing.T) {
+func TestEnrichmentRetryReadsTheDumpAgainAndAdvancesFromRunStart(t *testing.T) {
 	db := setup(t, false)
 	bulkDownloads := serve(t, "[]", record, http.StatusOK)
 	serveEnrichment(t, http.StatusBadGateway, "")
@@ -249,8 +249,8 @@ func TestEnrichmentRetrySkipsBulkAndAdvancesFromRunStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := bulkDownloads.Load(); got != 1 {
-		t.Errorf("bulk downloads = %d, want only the first run's", got)
+	if got := bulkDownloads.Load(); got != 2 {
+		t.Errorf("bulk downloads = %d, want a second read of the dump for the reconcile", got)
 	}
 	var rows int
 	if err := db.NewSelect().Table("gcve").ColumnExpr("count(*)").Scan(context.Background(), &rows); err != nil {
