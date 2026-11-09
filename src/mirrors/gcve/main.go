@@ -34,6 +34,9 @@ var (
 	vulnerabilityAPI = "https://vulnerability.circl.lu/api/vulnerability/"
 )
 
+// stateRejected is the CVE record state of a rejected record.
+const stateRejected = "REJECTED"
+
 // windowRequestInterval keeps requests under the anonymous limit of 20 a minute.
 var windowRequestInterval = 3 * time.Second
 
@@ -303,7 +306,7 @@ func processNDJSONStream(db *bun.DB, reader io.Reader) ([]string, error) {
 			parseErrors++
 			continue
 		}
-		if item.State == "REJECTED" {
+		if item.State == stateRejected {
 			rejected++
 		}
 		ids = append(ids, item.GCVEId)
@@ -417,7 +420,7 @@ func parseCVERecord(data []byte) (*knowledge.GCVEItem, error) {
 	}
 
 	// Only the identity and dates of a rejected record are used.
-	if item.State == "REJECTED" {
+	if item.State == stateRejected {
 		return item, nil
 	}
 
@@ -573,7 +576,7 @@ func processBatch(db *bun.DB, items []knowledge.GCVEItem) error {
 	batch := make([]knowledge.GCVEItem, 0, len(items))
 	var rejected []knowledge.GCVEItem
 	for _, item := range items {
-		if item.State == "REJECTED" {
+		if item.State == stateRejected {
 			rejected = append(rejected, item)
 		} else {
 			batch = append(batch, item)
