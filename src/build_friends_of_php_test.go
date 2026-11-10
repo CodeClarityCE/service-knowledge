@@ -42,7 +42,7 @@ func init() {
 			if empty {
 				files = map[string]string{"README.md": "# PHP Security Advisories Database"}
 			}
-			archive := tarRepository(t, files)
+			archive := tarFriendsOfPHPRepository(t, files)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write(archive)
 			}))
@@ -54,8 +54,8 @@ func init() {
 	})
 }
 
-// tarRepository builds a gzipped tarball of the advisory repository, as GitHub serves it.
-func tarRepository(t *testing.T, files map[string]string) []byte {
+// tarFriendsOfPHPRepository builds a gzipped tarball of the advisory repository, as GitHub serves it.
+func tarFriendsOfPHPRepository(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	gz := gzip.NewWriter(&out)
