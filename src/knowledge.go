@@ -145,11 +145,7 @@ func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error 
 	// pgsql.SetCodeClarityDB's doc comment).
 	pgsql.SetCodeClarityDB(codeClarityDB)
 
-	var all []string
-	for _, step := range updateSteps(knowledgeDB, configDB) {
-		all = append(all, step.name)
-	}
-	return updateSources(knowledgeDB, configDB, all...)
+	return runSteps(knowledgeDB, updateSteps(knowledgeDB, configDB))
 }
 
 // updateStep is one named step of an update.
@@ -174,16 +170,22 @@ func updateSteps(knowledgeDB *bun.DB, configDB *bun.DB) []updateStep {
 
 // updateSources runs only the named update steps, in update order.
 func updateSources(knowledgeDB *bun.DB, configDB *bun.DB, names ...string) error {
+	steps := slices.DeleteFunc(updateSteps(knowledgeDB, configDB), func(step updateStep) bool {
+		return !slices.Contains(names, step.name)
+	})
+	return runSteps(knowledgeDB, steps)
+}
+
+// runSteps runs every step unless the database is a dated restore.
+func runSteps(knowledgeDB *bun.DB, steps []updateStep) error {
 	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
 		return err
 	}
-	var steps []func() error
-	for _, step := range updateSteps(knowledgeDB, configDB) {
-		if slices.Contains(names, step.name) {
-			steps = append(steps, step.run)
-		}
+	runs := make([]func() error, len(steps))
+	for i, step := range steps {
+		runs[i] = step.run
 	}
-	return runAll(steps)
+	return runAll(runs)
 }
 
 // UpdateAndValidate updates every source, then validates the result, also after a failed update.
