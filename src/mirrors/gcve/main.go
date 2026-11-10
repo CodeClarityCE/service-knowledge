@@ -110,12 +110,6 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
-// dumpTotal is the upstream total: the dump's distinct records, on every path that reads the dump.
-// Enrichment and catch-up only refine or extend those records, and the bulk fallback reads neither.
-func dumpTotal(dumpIDs []string) *int64 {
-	return sourcesync.DistinctTotal(dumpIDs)
-}
-
 // fullImport loads the dump, enriches it, catches up from the dump's date and reconciles.
 // It records the bulk import as done first, so a later run only has to retry the enrichment.
 func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
@@ -137,7 +131,7 @@ func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(ids)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, ids...), enriched...), caughtUp...)
-	return dumpTotal(ids), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // retryAfterBulk finishes a full import whose enrichment failed, enriching first because that is what failed.
@@ -158,7 +152,7 @@ func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(dumped)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, dumped...), enriched...), caughtUp...)
-	return dumpTotal(dumped), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // catchUp applies the changes made since the dump was built.
@@ -198,7 +192,7 @@ func incrementalOrBulk(db *bun.DB, last, syncedAt time.Time) (time.Time, *int64,
 	if err != nil {
 		return time.Time{}, nil, errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
 	}
-	return dumpTime, dumpTotal(ids), nil
+	return dumpTime, sourcesync.DistinctTotal(ids), nil
 }
 
 // bulkImport downloads and stores the cvelistv5 dump, refusing one older than notBefore.

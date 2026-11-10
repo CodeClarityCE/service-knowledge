@@ -265,8 +265,8 @@ func TestEnrichmentRetryReadsTheDumpAgainAndAdvancesFromRunStart(t *testing.T) {
 	if got := bulkCompletedAt(t, db); !got.IsZero() {
 		t.Errorf("bulk_completed_at = %v, want it cleared", got)
 	}
-	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 1 {
-		t.Errorf("upstream_total = %v, want the dump's record", got)
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 2 {
+		t.Errorf("upstream_total = %v, want the dump and enrichment records", got)
 	}
 	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
 }
@@ -285,29 +285,6 @@ func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
 
 	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 1 {
 		t.Errorf("upstream_total = %v, want the full import's 1, not the window's count", got)
-	}
-}
-
-// The upstream total is the dump's distinct records, whether a full import or a bulk fallback read it.
-func TestFullImportAndBulkFallbackCountTheDumpAlike(t *testing.T) {
-	dump := record + "\n" + record + "\n"
-	full := setup(t, false)
-	serve(t, "[]", dump, http.StatusOK)
-	serveEnrichment(t, http.StatusOK, enrichedRecord)
-	if err := Update(full, full); err != nil {
-		t.Fatal(err)
-	}
-
-	fallback := setup(t, true)
-	serve(t, "not json", dump, http.StatusOK)
-	if err := Update(fallback, fallback); err != nil {
-		t.Fatal(err)
-	}
-
-	for name, db := range map[string]*bun.DB{"full import": full, "bulk fallback": fallback} {
-		if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 1 {
-			t.Errorf("%s upstream_total = %v, want the dump's 1 distinct record", name, got)
-		}
 	}
 }
 
