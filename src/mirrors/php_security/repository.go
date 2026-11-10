@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"go.yaml.in/yaml/v3"
 )
@@ -85,7 +86,7 @@ func parseRepository(r io.Reader) (repositorySnapshot, error) {
 		snapshot.advisories = append(snapshot.advisories, advisory)
 	}
 	if len(snapshot.advisories) == 0 {
-		return snapshot, errors.New("FriendsOfPHP archive holds no advisories")
+		return snapshot, fmt.Errorf("FriendsOfPHP archive holds no advisories: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 	return snapshot, nil
 }

@@ -24,18 +24,19 @@ var client = &http.Client{Timeout: 10 * time.Minute}
 
 // Update replaces the stored FriendsOfPHP advisories with the current repository content.
 func Update(db *bun.DB) error {
-	return sourcesync.Run(db, knowledge.SourceFriendsOfPHP, func() (time.Time, error) {
+	return sourcesync.RunCounted(db, knowledge.SourceFriendsOfPHP, func() (sourcesync.Result, error) {
 		syncedAt := time.Now()
 		snapshot, err := download()
 		if err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
 		logger.WithFields(logrus.Fields{"source": knowledge.SourceFriendsOfPHP, "advisories": len(snapshot.advisories), "commit": snapshot.commit}).
 			Info("Downloaded FriendsOfPHP repository")
 		if err := store(db, snapshot.advisories, syncedAt); err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
-		return syncedAt, nil
+		// Each advisory file in the repository is one stored record.
+		return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: sourcesync.Total(len(snapshot.advisories))}, nil
 	})
 }
 
@@ -96,3 +97,10 @@ func store(db *bun.DB, advisories []knowledge.FriendsOfPHPAdvisory, syncedAt tim
 
 // upsertChunkSize bounds the advisories in one insert statement.
 const upsertChunkSize = 500
+
+// UseUpstream points the mirror at another repository tarball URL and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	original := repositoryURL
+	repositoryURL = url
+	return func() { repositoryURL = original }
+}
