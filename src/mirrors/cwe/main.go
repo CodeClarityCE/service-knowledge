@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -38,7 +39,5 @@ func Update(db *bun.DB) error {
 
 // UseUpstream points the mirror at another CWE catalog URL and returns a function that undoes it.
 func UseUpstream(url string) (restore func()) {
-	original := catalogURL
-	catalogURL = url
-	return func() { catalogURL = original }
+	return override.Set(&catalogURL, url)
 }

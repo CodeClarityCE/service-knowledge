@@ -51,11 +51,7 @@ func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	originalBulk, originalRich, originalWindow, originalInterval := bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval
-	bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = server.URL+"/bulk", server.URL+"/rich", server.URL+"/last", 0
-	t.Cleanup(func() {
-		bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = originalBulk, originalRich, originalWindow, originalInterval
-	})
+	t.Cleanup(UseUpstream(server.URL+"/bulk", server.URL+"/rich", server.URL+"/last"))
 	return bulkDownloads
 }
 

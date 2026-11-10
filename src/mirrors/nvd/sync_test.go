@@ -40,14 +40,12 @@ func serveNVD(t *testing.T, page func(w http.ResponseWriter, start int)) {
 	})
 }
 
-// serveRequests answers NVD API calls with handler.
+// serveRequests answers NVD API calls, with or without a date window, with handler.
 func serveRequests(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	original := apiURLTemplate
-	apiURLTemplate = server.URL + "/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
-	t.Cleanup(func() { apiURLTemplate = original })
+	t.Cleanup(UseUpstream(server.URL))
 }
 
 func goodPage(total int) func(http.ResponseWriter) {
@@ -185,20 +183,48 @@ func TestDeferredRecordIsStoredWithoutPackageLinks(t *testing.T) {
 	}
 }
 
-// An incremental window sees only part of NVD, so the total of the last full fetch stays.
-func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
+// An incremental run also records NVD's current total, from one request with no date window.
+func TestIncrementalRunRecordsTheCurrentUpstreamTotal(t *testing.T) {
 	db := setup(t)
 	if _, err := db.ExecContext(context.Background(), "UPDATE knowledge_source_sync SET upstream_total = 420000"); err != nil {
 		t.Fatal(err)
 	}
 	good := goodPage(1)
-	serveNVD(t, func(w http.ResponseWriter, _ int) { good(w) })
+	serveRequests(t, func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("lastModStartDate") != "" {
+			good(w)
+			return
+		}
+		if query.Get("resultsPerPage") != "1" {
+			t.Errorf("total request asks for %s results per page, want 1", query.Get("resultsPerPage"))
+		}
+		fmt.Fprint(w, `{"totalResults":421910,"vulnerabilities":[]}`)
+	})
 
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceNVD); got == nil || *got != 420000 {
-		t.Errorf("upstream_total = %v, want 420000 kept", got)
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceNVD); got == nil || *got != 421910 {
+		t.Errorf("upstream_total = %v, want the current 421910", got)
 	}
+}
+
+// A run whose total request fails keeps its watermark, so the next run repeats the window.
+func TestFailedTotalRequestFailsTheIncrementalRun(t *testing.T) {
+	db := setup(t)
+	good := goodPage(1)
+	serveRequests(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("lastModStartDate") == "" {
+			http.Error(w, "nope", http.StatusBadGateway)
+			return
+		}
+		good(w)
+	})
+
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed total request should fail the source")
+	}
+	testhelper.AssertFailedWithWatermark(t, db, knowledge.SourceNVD, previous)
 }

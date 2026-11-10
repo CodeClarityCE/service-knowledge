@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	config "github.com/CodeClarityCE/utility-types/config_db"
@@ -103,8 +104,9 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	if err != nil {
 		return sourcesync.Result{}, err
 	}
-	total := distinctCount(snapshotIDs)
-	if total == 0 {
+	// One advisory can appear in several ecosystems.
+	total := sourcesync.DistinctTotal(snapshotIDs)
+	if *total == 0 {
 		return sourcesync.Result{}, fmt.Errorf("OSV archives hold no advisories: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 
@@ -116,16 +118,7 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	if err := SetLastOSVSync(db_config, syncedAt); err != nil {
 		return sourcesync.Result{}, err
 	}
-	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: sourcesync.Total(total)}, nil
-}
-
-// distinctCount counts the different ids; one advisory can appear in several ecosystems.
-func distinctCount(ids []string) int {
-	seen := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		seen[id] = struct{}{}
-	}
-	return len(seen)
+	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
 // importEcosystems tries every ecosystem and reports all that failed.
@@ -390,7 +383,5 @@ func InsertBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) err
 
 // UseUpstream points the mirror at another base URL for ecosystem archives and returns a function that undoes it.
 func UseUpstream(url string) (restore func()) {
-	original := dumpBaseURL
-	dumpBaseURL = url
-	return func() { dumpBaseURL = original }
+	return override.Set(&dumpBaseURL, url)
 }

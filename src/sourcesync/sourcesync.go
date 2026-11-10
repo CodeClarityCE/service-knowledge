@@ -57,6 +57,15 @@ func Total(n int) *int64 {
 	return &total
 }
 
+// DistinctTotal returns the number of different ids as an upstream total.
+func DistinctTotal(ids []string) *int64 {
+	distinct := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		distinct[id] = struct{}{}
+	}
+	return Total(len(distinct))
+}
+
 // Run performs sync and records its outcome. The returned error is non-nil if
 // the sync failed or its outcome could not be recorded.
 func Run(db *bun.DB, source string, sync Sync) error {

@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -61,7 +62,5 @@ func epssURL(date string) string {
 
 // UseUpstream points the mirror at another base URL for score files and returns a function that undoes it.
 func UseUpstream(url string) (restore func()) {
-	original := baseURL
-	baseURL = url
-	return func() { baseURL = original }
+	return override.Set(&baseURL, url)
 }

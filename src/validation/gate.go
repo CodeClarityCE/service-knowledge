@@ -56,10 +56,8 @@ func registerSourceChecks(source string, checks ...SourceCheck) {
 	sourceChecks[source] = append(sourceChecks[source], checks...)
 }
 
-// RunGate runs every completeness check without writing anything. Sources limits the
-// per-source checks to those sources; with none it covers every knowledge source.
-// A check that cannot run fails with its error as detail, so the error is only for
-// a gate that could not start.
+// RunGate runs every check read-only, per-source ones only for sources (all when none).
+// A check that cannot run fails with its error as detail; the error means the gate could not start.
 func RunGate(ctx context.Context, knowledgeDB, configDB *bun.DB, now time.Time, sources ...string) (GateReport, error) {
 	if len(sources) == 0 {
 		sources = knowledge.AllSources
@@ -187,42 +185,35 @@ func rowsCheck(ctx context.Context, g Gate, source string) Check {
 	return Check{Name: name, Expected: "> 0", Actual: current.rows, Pass: current.rows > 0}
 }
 
-// syncRow reads one source's outcome and watermark; a missing row reads as empty.
-func syncRow(ctx context.Context, db bun.IDB, source string) (knowledge.SourceSync, error) {
-	var row knowledge.SourceSync
-	err := db.QueryRowContext(ctx,
-		"SELECT last_outcome, watermark FROM knowledge_source_sync WHERE source = ?", source).
-		Scan(&row.LastOutcome, &row.Watermark)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return row, err
-	}
-	return row, nil
+// syncState is one source's row of knowledge_source_sync.
+type syncState struct {
+	lastOutcome   *string
+	watermark     *time.Time
+	upstreamTotal *int64
 }
 
-// upstreamTotal reads one source's recorded upstream total, nil when none is recorded.
-func upstreamTotal(ctx context.Context, db bun.IDB, source string) (*int64, error) {
-	var total sql.NullInt64
+// readSyncState reads one source's sync state; a missing row reads as empty.
+func readSyncState(ctx context.Context, db bun.IDB, source string) (syncState, error) {
+	var state syncState
 	err := db.QueryRowContext(ctx,
-		"SELECT upstream_total FROM knowledge_source_sync WHERE source = ?", source).Scan(&total)
+		"SELECT last_outcome, watermark, upstream_total FROM knowledge_source_sync WHERE source = ?", source).
+		Scan(&state.lastOutcome, &state.watermark, &state.upstreamTotal)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+		return syncState{}, err
 	}
-	if !total.Valid {
-		return nil, nil
-	}
-	return &total.Int64, nil
+	return state, nil
 }
 
 func lastOutcomeCheck(ctx context.Context, g Gate, source string) Check {
 	name := source + ".last_outcome"
-	row, err := syncRow(ctx, g.Knowledge, source)
+	state, err := readSyncState(ctx, g.Knowledge, source)
 	if err != nil {
 		return failed(name, knowledge.SourceSyncSuccess, err)
 	}
 	check := Check{Name: name, Expected: knowledge.SourceSyncSuccess, Pass: false}
-	if row.LastOutcome != nil {
-		check.Actual = *row.LastOutcome
-		check.Pass = *row.LastOutcome == knowledge.SourceSyncSuccess
+	if state.lastOutcome != nil {
+		check.Actual = *state.lastOutcome
+		check.Pass = *state.lastOutcome == knowledge.SourceSyncSuccess
 	}
 	return check
 }
@@ -232,18 +223,18 @@ func watermarkCheck(ctx context.Context, g Gate, source string) Check {
 	name := source + ".watermark"
 	limit := time.Duration(knowledge.StaleAfterHours(source) * float64(time.Hour))
 	expected := fmt.Sprintf("within %s of %s", limit, g.Now.UTC().Format(time.RFC3339))
-	row, err := syncRow(ctx, g.Knowledge, source)
+	state, err := readSyncState(ctx, g.Knowledge, source)
 	if err != nil {
 		return failed(name, expected, err)
 	}
-	if row.Watermark == nil {
+	if state.watermark == nil {
 		return Check{Name: name, Expected: expected, Actual: nil, Pass: false, Detail: "source has no watermark"}
 	}
 	return Check{
 		Name:     name,
 		Expected: expected,
-		Actual:   row.Watermark.UTC().Format(time.RFC3339),
-		Pass:     g.Now.Sub(*row.Watermark) <= limit,
+		Actual:   state.watermark.UTC().Format(time.RFC3339),
+		Pass:     g.Now.Sub(*state.watermark) <= limit,
 	}
 }
 
@@ -253,10 +244,11 @@ func upstreamTotalCheck(source string) SourceCheck {
 	return func(ctx context.Context, g Gate) Check {
 		name := source + ".upstream_total"
 		tolerance := upstreamTolerancePercent(source)
-		total, err := upstreamTotal(ctx, g.Knowledge, source)
+		state, err := readSyncState(ctx, g.Knowledge, source)
 		if err != nil {
 			return failed(name, nil, err)
 		}
+		total := state.upstreamTotal
 		stored, err := countWhere(ctx, g.Knowledge, source, "TRUE")
 		if err != nil {
 			return failed(name, total, err)

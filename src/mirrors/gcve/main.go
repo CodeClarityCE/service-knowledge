@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -109,15 +110,6 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
-// distinctTotal counts the distinct record ids upstream offered, since the dump and its enrichment overlap.
-func distinctTotal(ids []string) *int64 {
-	distinct := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		distinct[id] = struct{}{}
-	}
-	return sourcesync.Total(len(distinct))
-}
-
 // fullImport loads the dump, enriches it, catches up from the dump's date and reconciles.
 // It records the bulk import as done first, so a later run only has to retry the enrichment.
 func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
@@ -139,7 +131,7 @@ func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(ids)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, ids...), enriched...), caughtUp...)
-	return distinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // retryAfterBulk finishes a full import whose enrichment failed, enriching first because that is what failed.
@@ -160,7 +152,7 @@ func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(dumped)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, dumped...), enriched...), caughtUp...)
-	return distinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // catchUp applies the changes made since the dump was built.
@@ -200,7 +192,7 @@ func incrementalOrBulk(db *bun.DB, last, syncedAt time.Time) (time.Time, *int64,
 	if err != nil {
 		return time.Time{}, nil, errors.Join(fmt.Errorf("incremental fetch: %w", fetchErr), fmt.Errorf("fallback bulk import: %w", err))
 	}
-	return dumpTime, distinctTotal(ids), nil
+	return dumpTime, sourcesync.DistinctTotal(ids), nil
 }
 
 // bulkImport downloads and stores the cvelistv5 dump, refusing one older than notBefore.
@@ -854,11 +846,10 @@ func storeRecentRecords(db *bun.DB, records []json.RawMessage) error {
 // UseUpstream points the mirror at other dump, enrichment and update window URLs, without
 // pausing between window requests, and returns a function that undoes it.
 func UseUpstream(bulk, enrichment, window string) (restore func()) {
-	original := []string{bulkDumpURL, vulnrichmentURL, vulnerabilityAPI}
-	originalInterval := windowRequestInterval
-	bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = bulk, enrichment, window, 0
-	return func() {
-		bulkDumpURL, vulnrichmentURL, vulnerabilityAPI = original[0], original[1], original[2]
-		windowRequestInterval = originalInterval
-	}
+	return override.All(
+		override.Set(&bulkDumpURL, bulk),
+		override.Set(&vulnrichmentURL, enrichment),
+		override.Set(&vulnerabilityAPI, window),
+		override.Set(&windowRequestInterval, 0),
+	)
 }
