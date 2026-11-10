@@ -200,3 +200,76 @@ func TestFailureLogCarriesStructuredFields(t *testing.T) {
 		t.Errorf("entry = %v, want duration_seconds", entry)
 	}
 }
+
+func TestSuccessfulRunRecordsTheUpstreamTotal(t *testing.T) {
+	db := testhelper.SetupSyncTestDB(t)
+	seed(t, db)
+
+	err := RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{Watermark: time.Now(), UpstreamTotal: Total(2)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceEPSS); got == nil || *got != 2 {
+		t.Errorf("upstream_total = %v, want 2", got)
+	}
+}
+
+func TestRunWithoutATotalKeepsTheRecordedOne(t *testing.T) {
+	db := testhelper.SetupSyncTestDB(t)
+	seed(t, db)
+	if err := RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{Watermark: time.Now(), UpstreamTotal: Total(2)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An incremental run sees only a window of upstream.
+	err := RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{Watermark: time.Now()}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceEPSS); got == nil || *got != 2 {
+		t.Errorf("upstream_total = %v, want the earlier 2 kept", got)
+	}
+}
+
+func TestFailedRunKeepsTheRecordedTotal(t *testing.T) {
+	db := testhelper.SetupSyncTestDB(t)
+	seed(t, db)
+	if err := RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{Watermark: time.Now(), UpstreamTotal: Total(2)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{UpstreamTotal: Total(9)}, errors.New("store failed")
+	})
+
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceEPSS); got == nil || *got != 2 {
+		t.Errorf("upstream_total = %v, want the earlier 2 kept", got)
+	}
+}
+
+func TestUpstreamWithNoRecordsFailsTheSource(t *testing.T) {
+	db := testhelper.SetupSyncTestDB(t)
+	seed(t, db)
+
+	err := RunCounted(db, knowledge.SourceEPSS, func() (Result, error) {
+		return Result{Watermark: time.Now(), UpstreamTotal: Total(0)}, nil
+	})
+
+	if !errors.Is(err, ErrNoUpstreamRecords) {
+		t.Fatalf("err = %v, want ErrNoUpstreamRecords", err)
+	}
+	testhelper.AssertFailedWithWatermark(t, db, knowledge.SourceEPSS, previousWatermark)
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceEPSS); got != nil {
+		t.Errorf("upstream_total = %v, want none recorded", *got)
+	}
+}
