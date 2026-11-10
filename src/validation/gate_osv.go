@@ -42,7 +42,7 @@ func osvLinksCheck(ecosystem string) SourceCheck {
 func osvMaliciousCheck(ctx context.Context, g Gate) Check {
 	const name = "osv.malicious"
 	const expected = "reported, not counted in osv.rows"
-	malicious, err := countWhere(ctx, g.Knowledge, knowledge.SourceOSV, "retired_at IS NULL AND kind = 'malicious'")
+	malicious, err := countWhere(ctx, g.Knowledge, knowledge.SourceOSV, activeOSVMalicious)
 	if err != nil {
 		return failed(name, expected, err)
 	}
