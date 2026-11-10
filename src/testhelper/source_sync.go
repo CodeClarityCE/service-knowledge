@@ -124,11 +124,12 @@ func execAll(t *testing.T, db *bun.DB, statements ...string) {
 	}
 }
 
-// CreateTables creates one table per bun model in the test schema.
+// CreateTables creates one table per bun model in the test schema, skipping tables that exist.
+// Sources that share a table, such as package_vulnerability, can each create it.
 func CreateTables(t *testing.T, db *bun.DB, models ...any) {
 	t.Helper()
 	for _, model := range models {
-		if _, err := db.NewCreateTable().Model(model).Exec(context.Background()); err != nil {
+		if _, err := db.NewCreateTable().Model(model).IfNotExists().Exec(context.Background()); err != nil {
 			t.Fatalf("create table for %T: %v", model, err)
 		}
 	}
