@@ -149,6 +149,11 @@ func ReconcileGcve(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error 
 	return retireAbsent(db, knowledge.SourceGCVE, "gcve", "gcve_id", "gcve_id", "TRUE", nil, snapshotIDs, retiredAt)
 }
 
+// ReconcileFriendsOfPHP retires active advisories that a complete repository snapshot no longer contains.
+func ReconcileFriendsOfPHP(db *bun.DB, snapshotIDs []string, retiredAt time.Time) error {
+	return retireAbsent(db, knowledge.SourceFriendsOfPHP, "friends_of_php", "advisory_id", "friendsofphp_id", "TRUE", nil, snapshotIDs, retiredAt)
+}
+
 // SyncOsvRetirement retires the given advisories that are withdrawn and reactivates those the source asserts again.
 func SyncOsvRetirement(db *bun.DB, osvIDs []string) error {
 	ctx := context.Background()
@@ -312,7 +317,7 @@ func ReplaceGcvePackageLinks(db *bun.DB, advisoryIDs []uuid.UUID, links []knowle
 	return replacePackageLinks(db, "gcve_id", advisoryIDs, deduplicateGcvePackageVulnerabilities(links))
 }
 
-// ReplaceFriendsOfPhpPackageLinks makes links the only package links of the given FriendsOfPHP advisories.
-func ReplaceFriendsOfPhpPackageLinks(db *bun.DB, advisoryIDs []uuid.UUID, links []knowledge.PackageVulnerability) error {
-	return replacePackageLinks(db, "friendsofphp_id", advisoryIDs, deduplicateFriendsOfPhpPackageVulnerabilities(links))
+// ReplaceFriendsOfPHPPackageLinks makes links the only package links of the given FriendsOfPHP advisories.
+func ReplaceFriendsOfPHPPackageLinks(db *bun.DB, advisoryIDs []uuid.UUID, links []knowledge.PackageVulnerability) error {
+	return replacePackageLinks(db, "friendsofphp_id", advisoryIDs, deduplicateFriendsOfPHPPackageVulnerabilities(links))
 }

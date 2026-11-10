@@ -71,7 +71,7 @@ func normalizeGcveDates(items []knowledge.GCVEItem) {
 	}
 }
 
-func normalizeFriendsOfPhpDates(items []knowledge.FriendsOfPHPAdvisory) {
+func normalizeFriendsOfPHPDates(items []knowledge.FriendsOfPHPAdvisory) {
 	for i := range items {
 		normalizeDate("friends_of_php", items[i].AdvisoryId, "published", &items[i].Published)
 		normalizeDate("friends_of_php", items[i].AdvisoryId, "modified", &items[i].Modified)
