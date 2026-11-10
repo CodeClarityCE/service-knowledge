@@ -71,6 +71,26 @@ func BatchUpdateGcve(db *bun.DB, items []knowledge.GCVEItem) error {
 	return nil
 }
 
+// StoreRejectedGcve retires stored records that GCVE now rejects and stores unknown ones as
+// retired, so a fresh build holds every rejected record with its rejection date and no package links.
+func StoreRejectedGcve(db *bun.DB, rejected []knowledge.GCVEItem) error {
+	if len(rejected) == 0 {
+		return nil
+	}
+	if err := RetireRejectedGcve(db, rejected); err != nil {
+		return err
+	}
+	items := deduplicateGcveItems(rejected)
+	normalizeGcveDates(items)
+	for i := range items {
+		items[i].Retirement = knowledge.Retirement{RetiredReason: knowledge.RetiredRejected, RetiredAt: retirementDate(items[i].DateUpdated)}
+	}
+	if _, err := db.NewInsert().Model(&items).On("CONFLICT (gcve_id) DO NOTHING").Exec(context.Background()); err != nil {
+		return fmt.Errorf("store %d rejected GCVE records: %w", len(items), err)
+	}
+	return nil
+}
+
 // GetGcveByID retrieves a GCVE record by its GCVE ID.
 func GetGcveByID(db *bun.DB, gcveId string) (*knowledge.GCVEItem, error) {
 	ctx := context.Background()
