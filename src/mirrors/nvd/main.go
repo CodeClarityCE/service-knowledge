@@ -38,20 +38,20 @@ type Config struct {
 }
 
 // Update syncs CVEs modified since the NVD watermark, in windows of at most 120 days.
-// The watermark moves only after every window succeeded.
+// The watermark moves only after every window succeeded. Only a full fetch records the upstream total.
 func Update(db *bun.DB, db_config *bun.DB) error {
-	return sourcesync.Run(db, knowledge.SourceNVD, func() (time.Time, error) {
+	return sourcesync.RunCounted(db, knowledge.SourceNVD, func() (sourcesync.Result, error) {
 		return syncWindows(db, db_config)
 	})
 }
 
-// syncWindows returns the end of the last window, or the zero time if any window failed.
-func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
+// syncWindows returns the end of the last window, or an empty result if any window failed.
+func syncWindows(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	log.Println("Start updating NVD")
 
 	since, err := sourcesync.Watermark(db, knowledge.SourceNVD)
 	if err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
 	since = since.UTC()
 	log.Println("Last date: ", since)
@@ -95,44 +95,47 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		}
 
 		if _, _, err := syncPages(db, apiURLTemplateFor(since, end), apiKey, rateLimiter); err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
 		if !hasLaterWindow {
 			if err := pgsql.RetireStoredRejectedNvd(db); err != nil {
-				return time.Time{}, err
+				return sourcesync.Result{}, err
 			}
 			if err := sourcesync.SetConfigLast(db_config, "nvd_last", end); err != nil {
-				return time.Time{}, err
+				return sourcesync.Result{}, err
 			}
-			return end, nil
+			return sourcesync.Result{Watermark: end}, nil
 		}
 		since = end
 	}
 }
 
 // syncFull fetches every CVE, then retires stored records NVD no longer publishes.
-func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan struct{}) (time.Time, error) {
+func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan struct{}) (sourcesync.Result, error) {
 	started := time.Now().UTC()
 	logger.WithFields(logrus.Fields{"source": knowledge.SourceNVD}).Info("No NVD watermark, performing a full fetch")
 
 	total, snapshot, err := syncPages(db, fullURLTemplateFor, apiKey, rateLimiter)
 	if err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
+	}
+	if total == 0 {
+		return sourcesync.Result{}, fmt.Errorf("NVD reports no CVEs: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 	if len(snapshot) < total {
-		return time.Time{}, fmt.Errorf("incomplete NVD fetch: %d of %d records", len(snapshot), total)
+		return sourcesync.Result{}, fmt.Errorf("incomplete NVD fetch: %d of %d records", len(snapshot), total)
 	}
 
 	if err := pgsql.RetireStoredRejectedNvd(db); err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
 	if err := pgsql.ReconcileNvd(db, snapshot, started); err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
 	if err := sourcesync.SetConfigLast(db_config, "nvd_last", started); err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
-	return started, nil
+	return sourcesync.Result{Watermark: started, UpstreamTotal: sourcesync.Total(total)}, nil
 }
 
 // pageURL builds the request for one result page.
@@ -203,7 +206,7 @@ func syncPages(db *bun.DB, urlFor pageURL, apiKey string, rateLimiter chan struc
 }
 
 // syncPage stores one NVD page and its package links.
-// It returns the id of every record on the page, including those not written.
+// It returns the id of every record on the page.
 func syncPage(db *bun.DB, pageRequest, apiKey string, rateLimiter chan struct{}) ([]string, error) {
 	vulns, err := downloadBatch(pageRequest, apiKey, rateLimiter)
 	if err != nil {
@@ -223,21 +226,20 @@ func syncPage(db *bun.DB, pageRequest, apiKey string, rateLimiter chan struct{})
 		return nil, fmt.Errorf("get NVD UUIDs: %w", err)
 	}
 
-	writtenUUIDs := make([]uuid.UUID, 0, len(vulns))
-	for _, v := range vulns {
-		if id, ok := nvdIdToUUID[v.NVDId]; ok && nvdRecordKeepsLinks(v) {
-			writtenUUIDs = append(writtenUUIDs, id)
-		}
+	// Replacing links of every stored record drops those of rejected and deferred CVEs.
+	storedUUIDs := make([]uuid.UUID, 0, len(nvdIdToUUID))
+	for _, id := range nvdIdToUUID {
+		storedUUIDs = append(storedUUIDs, id)
 	}
 	pkgVulns := extractPackageVulnerabilitiesFromNVD(vulns, nvdIdToUUID)
-	if err := pgsql.ReplaceNvdPackageLinks(db, writtenUUIDs, pkgVulns); err != nil {
+	if err := pgsql.ReplaceNvdPackageLinks(db, storedUUIDs, pkgVulns); err != nil {
 		return nil, fmt.Errorf("replace package links: %w", err)
 	}
 	return nvdIds, nil
 }
 
-// nvdRecordKeepsLinks reports whether a record's package links follow this page.
-// Rejected records are retired and deferred records are not written.
+// nvdRecordKeepsLinks reports whether a record has package links.
+// Rejected records are retired and deferred records are stored but never matched.
 func nvdRecordKeepsLinks(item knowledge.NVDItem) bool {
 	return item.VulnStatus != "Rejected" && item.VulnStatus != "Deferred"
 }
@@ -372,4 +374,12 @@ func downloadBatch(url, apiKey string, rateLimiter chan struct{}) ([]knowledge.N
 	}
 
 	return knowledge.GetVulns(result), nil
+}
+
+// UseUpstream points the mirror at another NVD API base URL and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	originalWindow, originalFull := apiURLTemplate, fullURLTemplate
+	apiURLTemplate = url + "/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
+	fullURLTemplate = url + "/?resultsPerPage=%d&startIndex=%d"
+	return func() { apiURLTemplate, fullURLTemplate = originalWindow, originalFull }
 }

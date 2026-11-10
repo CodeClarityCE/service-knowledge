@@ -216,7 +216,7 @@ func TestPackageLinksAreReplaced(t *testing.T) {
 	}
 }
 
-func TestRejectedNvdIsRetiredInPlaceAndUnknownIsNotInserted(t *testing.T) {
+func TestRejectedNvdIsRetiredInPlaceAndUnknownIsStoredRetired(t *testing.T) {
 	db := setupReconcileDB(t)
 	if err := UpdateNvd(db, []knowledge.NVDItem{nvdItem("CVE-2024-1", "Analyzed", "2024-01-01T00:00:00.000")}); err != nil {
 		t.Fatal(err)
@@ -249,8 +249,11 @@ func TestRejectedNvdIsRetiredInPlaceAndUnknownIsNotInserted(t *testing.T) {
 	if n := linkCount(t, db, "nvd_id", id); n != 0 {
 		t.Errorf("rejected CVE keeps %d links", n)
 	}
-	if count := countNvd(t, db); count != 1 {
-		t.Errorf("rows = %d, the unknown rejected CVE should not be stored", count)
+	if count := countNvd(t, db); count != 2 {
+		t.Errorf("rows = %d, the unknown rejected CVE should be stored", count)
+	}
+	if unknown := readNvd(t, db, "CVE-2024-2"); unknown.RetiredReason != knowledge.RetiredRejected || unknown.RetiredAt.Format(time.RFC3339) != "2024-09-01T00:00:00Z" {
+		t.Errorf("unknown rejected CVE = %q at %s, want retired as rejected", unknown.RetiredReason, unknown.RetiredAt)
 	}
 
 	if err := UpdateNvd(db, []knowledge.NVDItem{nvdItem("CVE-2024-1", "Modified", "2024-10-01T00:00:00.000")}); err != nil {

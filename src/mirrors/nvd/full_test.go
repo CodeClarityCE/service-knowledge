@@ -98,6 +98,9 @@ func TestRecordsOnlyDeferredOrRejectedUpstreamAreNotRemoved(t *testing.T) {
 	if got := reason(t, db, "CVE-DEFERRED"); got != "" {
 		t.Errorf("deferred record retired: %q", got)
 	}
+	if total := testhelper.UpstreamTotal(t, db, knowledge.SourceNVD); total == nil || *total != 3 {
+		t.Errorf("upstream_total = %v, want 3", total)
+	}
 	if got := reason(t, db, "CVE-REJECTED"); got != knowledge.RetiredRejected {
 		t.Errorf("rejected record = %q, want rejected", got)
 	}

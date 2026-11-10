@@ -186,20 +186,16 @@ func retirementDate(upstream string) time.Time {
 	return time.Now().UTC()
 }
 
-// RetireRejectedNvd retires stored CVEs that NVD now rejects and removes their package links.
-// Their content is kept as it was while active, and unknown CVEs are not stored.
-func RetireRejectedNvd(db *bun.DB, rejected []knowledge.NVDItem) error {
-	ctx := context.Background()
-	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		for _, item := range rejected {
-			err := retireAndUnlink(ctx, tx, "nvd", "nvd_id", knowledge.RetiredRejected, "?", "nvd_id = ? AND retired_reason IS NULL",
-				retirementDate(item.LastModified), item.NVDId)
-			if err != nil {
-				return fmt.Errorf("retire rejected CVE %s: %w", item.NVDId, err)
-			}
+// retireRejectedNvd retires the given rejected CVEs, dated by their last modification, and removes their package links.
+func retireRejectedNvd(ctx context.Context, tx bun.Tx, rejected []knowledge.NVDItem) error {
+	for _, item := range rejected {
+		err := retireAndUnlink(ctx, tx, "nvd", "nvd_id", knowledge.RetiredRejected, "?", "nvd_id = ? AND retired_reason IS NULL",
+			retirementDate(item.LastModified), item.NVDId)
+		if err != nil {
+			return fmt.Errorf("retire rejected CVE %s: %w", item.NVDId, err)
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // RetireStoredRejectedNvd retires rows already stored with a rejected status.
