@@ -174,7 +174,7 @@ func TestUpdateNvdKeepsLastCopyOfCveRepeatedInPage(t *testing.T) {
 	}
 }
 
-func TestUpdateNvdPageWithNothingToWriteSucceeds(t *testing.T) {
+func TestUpdateNvdStoresPagesOfOnlyRejectedAndDeferredRecords(t *testing.T) {
 	db := setupNvdDB(t)
 
 	page := []knowledge.NVDItem{
@@ -188,8 +188,8 @@ func TestUpdateNvdPageWithNothingToWriteSucceeds(t *testing.T) {
 		t.Fatalf("UpdateNvd with no items: %v", err)
 	}
 
-	if got := countNvd(t, db); got != 0 {
-		t.Errorf("row count = %d, want 0", got)
+	if got := countNvd(t, db); got != 2 {
+		t.Errorf("row count = %d, want both records stored", got)
 	}
 }
 
