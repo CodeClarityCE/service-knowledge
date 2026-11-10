@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
@@ -83,7 +84,7 @@ func parseEPSS(scanner *bufio.Scanner) ([]knowledge.EPSS, error) {
 		return nil, errors.New("EPSS file has no score date")
 	}
 	if len(scores) == 0 {
-		return nil, errors.New("EPSS file has no scores")
+		return nil, fmt.Errorf("EPSS file has no scores: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 	for i := range scores {
 		scores[i].ScoreDate = scoreDate
