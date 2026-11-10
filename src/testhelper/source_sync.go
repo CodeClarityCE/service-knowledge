@@ -16,7 +16,7 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 )
 
-// sourceSyncDDL matches the CreateKnowledgeSourceSync API migration.
+// sourceSyncDDL matches the CreateKnowledgeSourceSync API migration and the later ones that add columns.
 const sourceSyncDDL = `
 CREATE TABLE knowledge_source_sync (
 	source character varying NOT NULL PRIMARY KEY,
@@ -30,7 +30,8 @@ CREATE TABLE knowledge_source_sync (
 	validated_row_count bigint,
 	validated_malicious_count bigint,
 	validated_at timestamptz,
-	validation_error text
+	validation_error text,
+	upstream_total bigint
 )`
 
 // datedRestoreDDL matches the AddKnowledgeValidation API migration.
@@ -41,15 +42,61 @@ CREATE TABLE knowledge_dated_restore (
 	marked_at timestamptz NOT NULL DEFAULT now()
 )`
 
+// migrationsDDL matches the table TypeORM records applied migrations in.
+const migrationsDDL = `
+CREATE TABLE migrations (
+	id serial PRIMARY KEY,
+	timestamp bigint NOT NULL,
+	name character varying NOT NULL
+)`
+
+// configDDL matches the CreateConfigBaseline API migration and the later ones that add columns.
+const configDDL = `
+CREATE TABLE config (
+	id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+	nvd_last timestamptz, npm_last text, gcve_last timestamptz, osv_last timestamptz
+)`
+
+// uuidShimDDL stands in for the uuid-ossp extension; models default their ids to it.
+const uuidShimDDL = `CREATE FUNCTION uuid_generate_v4() RETURNS uuid AS 'SELECT gen_random_uuid()' LANGUAGE SQL`
+
 // SetupSyncTestDB opens a fresh schema in the throwaway database named by
 // KNOWLEDGE_SYNC_TEST_DSN, holding the source sync and config tables.
 func SetupSyncTestDB(t *testing.T) *bun.DB {
+	t.Helper()
+	db := openSchema(t, testDSN(t))
+	execAll(t, db, uuidShimDDL, sourceSyncDDL, datedRestoreDDL, configDDL, `INSERT INTO config (npm_last) VALUES ('0')`)
+	return db
+}
+
+// SetupBuildTestDBs opens a knowledge and a config schema laid out like an empty
+// install after every API migration: one config row with null watermarks, and a
+// sync row with a null watermark for every source. Tests record applied migrations.
+func SetupBuildTestDBs(t *testing.T) (knowledgeDB, configDB *bun.DB) {
+	t.Helper()
+	dsn := testDSN(t)
+	knowledgeDB = openSchema(t, dsn)
+	execAll(t, knowledgeDB, uuidShimDDL, sourceSyncDDL, datedRestoreDDL, migrationsDDL)
+	for _, source := range knowledge.AllSources {
+		execAll(t, knowledgeDB, fmt.Sprintf("INSERT INTO knowledge_source_sync (source) VALUES ('%s')", source))
+	}
+	configDB = openSchema(t, dsn)
+	execAll(t, configDB, uuidShimDDL, configDDL, migrationsDDL, `INSERT INTO config DEFAULT VALUES`)
+	return knowledgeDB, configDB
+}
+
+func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("KNOWLEDGE_SYNC_TEST_DSN")
 	if dsn == "" {
 		t.Skip("KNOWLEDGE_SYNC_TEST_DSN is not set")
 	}
+	return dsn
+}
 
+// openSchema creates a random schema, opens a connection that uses it, and drops it after the test.
+func openSchema(t *testing.T, dsn string) *bun.DB {
+	t.Helper()
 	schema := "sync_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	admin := openDB(dsn, nil)
 	defer admin.Close()
@@ -65,23 +112,16 @@ func SetupSyncTestDB(t *testing.T) *bun.DB {
 		defer cleaner.Close()
 		_, _ = cleaner.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")
 	})
+	return db
+}
 
-	for _, ddl := range []string{
-		// Models default their ids to this function.
-		`CREATE FUNCTION uuid_generate_v4() RETURNS uuid AS 'SELECT gen_random_uuid()' LANGUAGE SQL`,
-		sourceSyncDDL,
-		datedRestoreDDL,
-		`CREATE TABLE config (
-			id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-			nvd_last timestamptz, npm_last text, gcve_last timestamptz, osv_last timestamptz
-		)`,
-		`INSERT INTO config (npm_last) VALUES ('0')`,
-	} {
-		if _, err := db.ExecContext(ctx, ddl); err != nil {
+func execAll(t *testing.T, db *bun.DB, statements ...string) {
+	t.Helper()
+	for _, statement := range statements {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
 			t.Fatalf("create test tables: %v", err)
 		}
 	}
-	return db
 }
 
 // CreateTables creates one table per bun model in the test schema.
@@ -203,4 +243,19 @@ func ConfigTimeIsNull(t *testing.T, db *bun.DB, column string) bool {
 		t.Fatalf("read config.%s: %v", column, err)
 	}
 	return isNull
+}
+
+// UpstreamTotal reads the source's recorded upstream total, nil when none is recorded.
+func UpstreamTotal(t *testing.T, db *bun.DB, source string) *int64 {
+	t.Helper()
+	var total sql.NullInt64
+	err := db.QueryRowContext(context.Background(),
+		"SELECT upstream_total FROM knowledge_source_sync WHERE source = ?", source).Scan(&total)
+	if err != nil {
+		t.Fatalf("read %s upstream total: %v", source, err)
+	}
+	if !total.Valid {
+		return nil
+	}
+	return &total.Int64
 }

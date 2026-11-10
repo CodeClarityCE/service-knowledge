@@ -1,7 +1,6 @@
 package cwe
 
 import (
-	"errors"
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
@@ -12,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
 
@@ -80,7 +80,7 @@ func downloadCWEs() ([]knowledge.CWEEntry, error) {
 		return nil, err
 	}
 	if len(res.Weaknesses.Weaknesses) == 0 {
-		return nil, errors.New("CWE list has no weaknesses")
+		return nil, fmt.Errorf("CWE list has no weaknesses: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 
 	weaknessMap := map[string]knowledge.WeaknessCWE{}

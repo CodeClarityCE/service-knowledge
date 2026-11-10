@@ -21,7 +21,7 @@ import (
 // It fetches the licenses from a remote source and updates them in the graph.
 // Returns an error if there is a problem when fetching or updating licenses.
 func Update(db *bun.DB) error {
-	return sourcesync.Run(db, knowledge.SourceLicenses, func() (time.Time, error) {
+	return sourcesync.RunCounted(db, knowledge.SourceLicenses, func() (sourcesync.Result, error) {
 		log.Println("Start updating Licenses metadata")
 		syncedAt := time.Now()
 
@@ -29,7 +29,7 @@ func Update(db *bun.DB) error {
 		licenses, err := downloadLicenses()
 		if err != nil {
 			log.Print("Problem when fetching licenses")
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
 
 		licenses = addCodeClarityInfo(licenses)
@@ -37,7 +37,7 @@ func Update(db *bun.DB) error {
 		// Update licenses
 		if err := pgsql.UpdateLicenses(db, licenses); err != nil {
 			log.Print("Problem when updating licenses")
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
 
 		ids := make([]string, len(licenses))
@@ -45,10 +45,17 @@ func Update(db *bun.DB) error {
 			ids[i] = license.LicenseID
 		}
 		if err := pgsql.ReconcileLicenses(db, ids); err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
-		return syncedAt, nil
+		return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: sourcesync.Total(len(licenses))}, nil
 	})
+}
+
+// UseUpstream points the mirror at another SPDX license list URL and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	original := licensesURL
+	licensesURL = url
+	return func() { licensesURL = original }
 }
 
 // licensesURL is the current SPDX license list.
@@ -86,7 +93,7 @@ func downloadLicenses() ([]knowledge.License, error) {
 	}
 
 	if len(result.Licenses) == 0 {
-		return nil, fmt.Errorf("SPDX license list has no licenses")
+		return nil, fmt.Errorf("SPDX license list has no licenses: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 
 	return knowledge.GetDetails(result.Licenses), nil
