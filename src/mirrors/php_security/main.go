@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -100,7 +101,5 @@ const upsertChunkSize = 500
 
 // UseUpstream points the mirror at another repository tarball URL and returns a function that undoes it.
 func UseUpstream(url string) (restore func()) {
-	original := repositoryURL
-	repositoryURL = url
-	return func() { repositoryURL = original }
+	return override.Set(&repositoryURL, url)
 }

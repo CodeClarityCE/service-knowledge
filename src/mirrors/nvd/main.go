@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -255,7 +256,7 @@ func syncPage(db *bun.DB, pageRequest, apiKey string, rateLimiter chan struct{})
 // nvdRecordKeepsLinks reports whether a record has package links.
 // Rejected records are retired and deferred records are stored but never matched.
 func nvdRecordKeepsLinks(item knowledge.NVDItem) bool {
-	return item.VulnStatus != "Rejected" && item.VulnStatus != "Deferred"
+	return item.VulnStatus != pgsql.NvdStatusRejected && item.VulnStatus != pgsql.NvdStatusDeferred
 }
 
 func fetchNVDStats(url, apiKey string, result *NVDStats) error {
@@ -392,8 +393,8 @@ func downloadBatch(url, apiKey string, rateLimiter chan struct{}) ([]knowledge.N
 
 // UseUpstream points the mirror at another NVD API base URL and returns a function that undoes it.
 func UseUpstream(url string) (restore func()) {
-	originalWindow, originalFull := apiURLTemplate, fullURLTemplate
-	apiURLTemplate = url + "/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
-	fullURLTemplate = url + "/?resultsPerPage=%d&startIndex=%d"
-	return func() { apiURLTemplate, fullURLTemplate = originalWindow, originalFull }
+	return override.All(
+		override.Set(&apiURLTemplate, url+"/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"),
+		override.Set(&fullURLTemplate, url+"/?resultsPerPage=%d&startIndex=%d"),
+	)
 }
