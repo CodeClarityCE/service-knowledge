@@ -109,7 +109,8 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
-// distinctTotal counts the distinct record ids upstream offered, since the dump and its enrichment overlap.
+// distinctTotal is the upstream total: the dump's distinct records, on every path that reads the dump.
+// Enrichment and catch-up only refine or extend those records, and the bulk fallback reads neither.
 func distinctTotal(ids []string) *int64 {
 	distinct := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -139,7 +140,7 @@ func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(ids)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, ids...), enriched...), caughtUp...)
-	return distinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return distinctTotal(ids), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // retryAfterBulk finishes a full import whose enrichment failed, enriching first because that is what failed.
@@ -160,7 +161,7 @@ func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
 
 	snapshot := make([]string, 0, len(dumped)+len(enriched)+len(caughtUp))
 	snapshot = append(append(append(snapshot, dumped...), enriched...), caughtUp...)
-	return distinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return distinctTotal(dumped), pgsql.ReconcileGcve(db, snapshot, syncedAt)
 }
 
 // catchUp applies the changes made since the dump was built.
