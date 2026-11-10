@@ -38,7 +38,7 @@ type Config struct {
 }
 
 // Update syncs CVEs modified since the NVD watermark, in windows of at most 120 days.
-// The watermark moves only after every window succeeded. Only a full fetch records the upstream total.
+// The watermark moves only after every window succeeded. Every run records NVD's current total.
 func Update(db *bun.DB, db_config *bun.DB) error {
 	return sourcesync.RunCounted(db, knowledge.SourceNVD, func() (sourcesync.Result, error) {
 		return syncWindows(db, db_config)
@@ -101,10 +101,14 @@ func syncWindows(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 			if err := pgsql.RetireStoredRejectedNvd(db); err != nil {
 				return sourcesync.Result{}, err
 			}
+			total, err := upstreamTotal(apiKey, rateLimiter)
+			if err != nil {
+				return sourcesync.Result{}, err
+			}
 			if err := sourcesync.SetConfigLast(db_config, "nvd_last", end); err != nil {
 				return sourcesync.Result{}, err
 			}
-			return sourcesync.Result{Watermark: end}, nil
+			return sourcesync.Result{Watermark: end, UpstreamTotal: sourcesync.Total(total)}, nil
 		}
 		since = end
 	}
@@ -136,6 +140,16 @@ func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan str
 		return sourcesync.Result{}, err
 	}
 	return sourcesync.Result{Watermark: started, UpstreamTotal: sourcesync.Total(total)}, nil
+}
+
+// upstreamTotal asks NVD for its current number of CVEs with one single-result page and no date window.
+func upstreamTotal(apiKey string, rateLimiter chan struct{}) (int, error) {
+	var result NVDStats
+	<-rateLimiter
+	if err := fetchNVDStats(fullURLTemplateFor(1, 0), apiKey, &result); err != nil {
+		return 0, fmt.Errorf("fetch NVD total: %w", err)
+	}
+	return result.TotalResults, nil
 }
 
 // pageURL builds the request for one result page.
