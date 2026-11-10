@@ -9,6 +9,14 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// NVD vulnStatus values with special handling. Only Analyzed and Modified CVEs are matched.
+const (
+	NvdStatusRejected = "Rejected"
+	NvdStatusDeferred = "Deferred"
+	NvdStatusAnalyzed = "Analyzed"
+	NvdStatusModified = "Modified"
+)
+
 // nvdItemsToWrite keeps the last copy of each CVE, because one upsert cannot touch the same row twice.
 // It splits off rejected items, which are retired rather than updated.
 func nvdItemsToWrite(nvd []knowledge.NVDItem) (items, rejected []knowledge.NVDItem) {
@@ -23,7 +31,7 @@ func nvdItemsToWrite(nvd []knowledge.NVDItem) (items, rejected []knowledge.NVDIt
 		}
 	}
 	for _, item := range unique {
-		if item.VulnStatus == "Rejected" {
+		if item.VulnStatus == NvdStatusRejected {
 			rejected = append(rejected, item)
 		} else {
 			items = append(items, item)

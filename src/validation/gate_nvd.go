@@ -3,6 +3,7 @@ package validation
 import (
 	"context"
 
+	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
 
@@ -15,7 +16,7 @@ func init() {
 func nvdConfigurationsCheck(ctx context.Context, g Gate) Check {
 	const name = "nvd.configurations"
 	missing, err := countWhere(ctx, g.Knowledge, knowledge.SourceNVD, `retired_at IS NULL
-		AND "vulnStatus" IN ('Analyzed', 'Modified')
+		AND "vulnStatus" IN ('`+pgsql.NvdStatusAnalyzed+`', '`+pgsql.NvdStatusModified+`')
 		AND (configurations IS NULL OR jsonb_typeof(configurations) <> 'array' OR jsonb_array_length(configurations) = 0)`)
 	if err != nil {
 		return failed(name, 0, err)

@@ -201,7 +201,7 @@ func retireRejectedNvd(ctx context.Context, tx bun.Tx, rejected []knowledge.NVDI
 // RetireStoredRejectedNvd retires rows already stored with a rejected status.
 func RetireStoredRejectedNvd(db *bun.DB) error {
 	err := retireAndUnlink(context.Background(), db, "nvd", "nvd_id", knowledge.RetiredRejected,
-		`COALESCE("lastModified", now())`, `"vulnStatus" = 'Rejected' AND retired_reason IS NULL`)
+		`COALESCE("lastModified", now())`, `"vulnStatus" = '`+NvdStatusRejected+`' AND retired_reason IS NULL`)
 	if err != nil {
 		return fmt.Errorf("retire stored rejected NVD rows: %w", err)
 	}
