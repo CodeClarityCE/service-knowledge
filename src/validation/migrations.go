@@ -1,8 +1,6 @@
 package validation
 
-// The API migrations a knowledge build must have applied, oldest first. Keep these
-// equal to api/src/migrations/knowledge and api/src/migrations/config;
-// TestExpectedMigrationsMatchTheAPI compares them when the API checkout is present.
+// The API knowledge and config migrations a build must have applied, oldest first; keep equal to api/src/migrations.
 // KNOWLEDGE_EXPECTED_MIGRATIONS_KNOWLEDGE and _CONFIG (comma-separated) replace them.
 var (
 	ExpectedKnowledgeMigrations = []string{

@@ -69,9 +69,8 @@ func SetupSyncTestDB(t *testing.T) *bun.DB {
 	return db
 }
 
-// SetupBuildTestDBs opens a knowledge and a config schema laid out like an empty
-// install after every API migration: one config row with null watermarks, and a
-// sync row with a null watermark for every source. Tests record applied migrations.
+// SetupBuildTestDBs opens knowledge and config schemas like a migrated empty install: null watermarks everywhere.
+// Tests record applied migrations themselves.
 func SetupBuildTestDBs(t *testing.T) (knowledgeDB, configDB *bun.DB) {
 	t.Helper()
 	dsn := testDSN(t)

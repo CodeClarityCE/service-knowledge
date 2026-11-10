@@ -56,10 +56,8 @@ func registerSourceChecks(source string, checks ...SourceCheck) {
 	sourceChecks[source] = append(sourceChecks[source], checks...)
 }
 
-// RunGate runs every completeness check without writing anything. Sources limits the
-// per-source checks to those sources; with none it covers every knowledge source.
-// A check that cannot run fails with its error as detail, so the error is only for
-// a gate that could not start.
+// RunGate runs every check read-only, per-source ones only for sources (all when none).
+// A check that cannot run fails with its error as detail; the error means the gate could not start.
 func RunGate(ctx context.Context, knowledgeDB, configDB *bun.DB, now time.Time, sources ...string) (GateReport, error) {
 	if len(sources) == 0 {
 		sources = knowledge.AllSources

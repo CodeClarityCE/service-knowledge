@@ -18,8 +18,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// The build-from-empty test updates every registered source from a fake upstream
-// into an empty scratch database, then runs the read-only completeness gate.
+// The build-from-empty test updates every source from a fake upstream into empty databases, then runs the gate.
 // Each source registers itself from its own build_<source>_test.go file.
 
 // fakeSource is one knowledge source in the build-from-empty test.
