@@ -76,7 +76,8 @@ func (f *fakeUpstream) serve(t *testing.T) {
 		}
 		fmt.Fprint(w, f.dump)
 	})
-	mux.HandleFunc("/rich", func(http.ResponseWriter, *http.Request) {})
+	// Vulnrichment enriches records the dump already holds.
+	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, f.dump) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	originalBulk, originalRich, originalWindow, originalInterval := bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval
