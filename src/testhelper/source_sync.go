@@ -134,6 +134,31 @@ func CreateTables(t *testing.T, db *bun.DB, models ...any) {
 	}
 }
 
+// friendsOfPHPDDL matches friends_of_php after every API knowledge migration has run.
+const friendsOfPHPDDL = `
+CREATE TABLE friends_of_php (
+	id uuid NOT NULL DEFAULT uuid_generate_v4() PRIMARY KEY,
+	advisory_id character varying NOT NULL UNIQUE,
+	title character varying NOT NULL,
+	cve character varying,
+	link character varying NOT NULL,
+	reference character varying NOT NULL,
+	composer character varying,
+	description text,
+	branches jsonb NOT NULL DEFAULT '{}',
+	published timestamptz,
+	modified timestamptz,
+	retired_reason character varying CHECK (retired_reason IN ('rejected', 'withdrawn', 'removed')),
+	retired_at timestamptz,
+	CHECK ((retired_reason IS NULL) = (retired_at IS NULL))
+)`
+
+// CreateFriendsOfPHPTable creates friends_of_php as the API migrations leave it.
+func CreateFriendsOfPHPTable(t *testing.T, db *bun.DB) {
+	t.Helper()
+	execAll(t, db, friendsOfPHPDDL)
+}
+
 // CreatePackageLinkIndexes adds the unique indexes that package link upserts target.
 func CreatePackageLinkIndexes(t *testing.T, db *bun.DB) {
 	t.Helper()
