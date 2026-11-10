@@ -33,7 +33,7 @@ func setup(t *testing.T, watermark bool) *bun.DB {
 	return db
 }
 
-// serve answers the incremental API with records and the dumps with dump.
+// serve answers the incremental API with records and both dumps with dump.
 // It returns a count of the bulk dump downloads.
 func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 	t.Helper()
@@ -46,15 +46,12 @@ func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 		w.WriteHeader(status)
 		fmt.Fprint(w, dump)
 	})
-	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) {})
+	// Vulnrichment enriches records the dump already holds.
+	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, dump) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	originalBulk, originalRich, originalWindow, originalInterval := bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval
-	bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = server.URL+"/bulk", server.URL+"/rich", server.URL+"/last", 0
-	t.Cleanup(func() {
-		bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = originalBulk, originalRich, originalWindow, originalInterval
-	})
+	t.Cleanup(UseUpstream(server.URL+"/bulk", server.URL+"/rich", server.URL+"/last"))
 	return bulkDownloads
 }
 
@@ -268,7 +265,27 @@ func TestEnrichmentRetryReadsTheDumpAgainAndAdvancesFromRunStart(t *testing.T) {
 	if got := bulkCompletedAt(t, db); !got.IsZero() {
 		t.Errorf("bulk_completed_at = %v, want it cleared", got)
 	}
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 2 {
+		t.Errorf("upstream_total = %v, want the dump and enrichment records", got)
+	}
 	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
+}
+
+func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
+	db := setup(t, false)
+	serve(t, "[]", record, http.StatusOK)
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+	serve(t, "["+enrichedRecord+"]", record, http.StatusOK)
+
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 1 {
+		t.Errorf("upstream_total = %v, want the full import's 1, not the window's count", got)
+	}
 }
 
 func TestRepeatedEnrichmentFailureKeepsSourceFailedAndBulkTime(t *testing.T) {

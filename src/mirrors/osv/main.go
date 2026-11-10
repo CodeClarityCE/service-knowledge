@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	config "github.com/CodeClarityCE/utility-types/config_db"
@@ -81,13 +82,14 @@ var dumpBaseURL = "https://osv-vulnerabilities.storage.googleapis.com/"
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
 func Update(db *bun.DB, db_config *bun.DB) error {
-	return sourcesync.Run(db, knowledge.SourceOSV, func() (time.Time, error) {
+	return sourcesync.RunCounted(db, knowledge.SourceOSV, func() (sourcesync.Result, error) {
 		return sync(db, db_config)
 	})
 }
 
-// sync imports every ecosystem and returns the import's start time on full success.
-func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
+// sync imports every ecosystem and, on full success, returns the import's start
+// time and the number of distinct advisories the archives held.
+func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	log.Println("Start updating OSV vulnerabilities")
 	syncedAt := time.Now()
 	bar := progressbar.Default(int64(len(ImportedEcosystems)))
@@ -100,18 +102,23 @@ func sync(db *bun.DB, db_config *bun.DB) (time.Time, error) {
 		return processEcosystem(db, ecosystem, url, &snapshotIDs)
 	})
 	if err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
+	}
+	// One advisory can appear in several ecosystems.
+	total := sourcesync.DistinctTotal(snapshotIDs)
+	if *total == 0 {
+		return sourcesync.Result{}, fmt.Errorf("OSV archives hold no advisories: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 
 	// Reached only when every ecosystem downloaded, parsed and stored without error.
 	if err := pgsql.ReconcileOsv(db, snapshotIDs, ImportedEcosystems, syncedAt); err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
 
 	if err := SetLastOSVSync(db_config, syncedAt); err != nil {
-		return time.Time{}, err
+		return sourcesync.Result{}, err
 	}
-	return syncedAt, nil
+	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
 // importEcosystems tries every ecosystem and reports all that failed.
@@ -372,4 +379,9 @@ func InsertBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) err
 	}
 
 	return nil
+}
+
+// UseUpstream points the mirror at another base URL for ecosystem archives and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	return override.Set(&dumpBaseURL, url)
 }

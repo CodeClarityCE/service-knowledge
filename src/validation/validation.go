@@ -211,14 +211,14 @@ func ResetRowFloors(db *bun.DB, resetSources ...string) error {
 }
 
 // countSource counts active rows, and for OSV counts each advisory kind separately.
-func countSource(ctx context.Context, db *bun.DB, source string) (counts, error) {
+func countSource(ctx context.Context, db bun.IDB, source string) (counts, error) {
 	switch source {
 	case knowledge.SourceOSV:
-		rows, err := countWhere(ctx, db, source, "retired_at IS NULL AND kind = 'vulnerability'")
+		rows, err := countWhere(ctx, db, source, activeOSVVulnerabilities)
 		if err != nil {
 			return counts{}, err
 		}
-		malicious, err := countWhere(ctx, db, source, "retired_at IS NULL AND kind = 'malicious'")
+		malicious, err := countWhere(ctx, db, source, activeOSVMalicious)
 		if err != nil {
 			return counts{}, err
 		}
@@ -232,7 +232,13 @@ func countSource(ctx context.Context, db *bun.DB, source string) (counts, error)
 	}
 }
 
-func countWhere(ctx context.Context, db *bun.DB, table, condition string) (int64, error) {
+// Conditions selecting active OSV rows of each advisory kind.
+const (
+	activeOSVVulnerabilities = "retired_at IS NULL AND kind = '" + knowledge.AdvisoryKindVulnerability + "'"
+	activeOSVMalicious       = "retired_at IS NULL AND kind = '" + knowledge.AdvisoryKindMalicious + "'"
+)
+
+func countWhere(ctx context.Context, db bun.IDB, table, condition string) (int64, error) {
 	var rows int64
 	err := db.NewSelect().TableExpr("?", bun.Ident(table)).ColumnExpr("count(*)").Where(condition).Scan(ctx, &rows)
 	return rows, err

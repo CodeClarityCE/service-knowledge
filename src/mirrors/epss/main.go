@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -12,16 +13,17 @@ import (
 
 // Update imports the current EPSS scores and removes CVEs the file no longer contains.
 func Update(db *bun.DB) error {
-	return sourcesync.Run(db, knowledge.SourceEPSS, func() (time.Time, error) {
+	return sourcesync.RunCounted(db, knowledge.SourceEPSS, func() (sourcesync.Result, error) {
 		syncedAt := time.Now()
 		cves, err := importScores(db, "")
 		if err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
 		if err := pgsql.ReconcileEPSS(db, cves); err != nil {
-			return time.Time{}, err
+			return sourcesync.Result{}, err
 		}
-		return syncedAt, nil
+		// The total is the file's score rows.
+		return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: sourcesync.Total(len(cves))}, nil
 	})
 }
 
@@ -56,4 +58,9 @@ func epssURL(date string) string {
 		return baseURL + "epss_scores-current.csv.gz"
 	}
 	return baseURL + "epss_scores-" + date + ".csv.gz"
+}
+
+// UseUpstream points the mirror at another base URL for score files and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	return override.Set(&baseURL, url)
 }

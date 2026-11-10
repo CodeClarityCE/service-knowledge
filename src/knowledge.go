@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
@@ -21,6 +22,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	"github.com/CodeClarityCE/service-knowledge/src/validation"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
+	knowledgedb "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -138,25 +140,52 @@ func UpdateWithSetup() error {
 
 // Update runs every knowledge source, then reports all that failed as a joined error.
 func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
-	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
-		return err
-	}
-
 	// Package-update notifications need the codeclarity database; set it once
 	// here rather than opening an ad-hoc connection per package (see
 	// pgsql.SetCodeClarityDB's doc comment).
 	pgsql.SetCodeClarityDB(codeClarityDB)
 
-	return runAll([]func() error{
-		func() error { return licenses.Update(knowledgeDB) },
-		func() error { return epss.Update(knowledgeDB) },
-		func() error { return osv.Update(knowledgeDB, configDB) },
-		func() error { return cwe.Update(knowledgeDB) },
-		func() error { return nvd.Update(knowledgeDB, configDB) },
-		func() error { return gcve.Update(knowledgeDB, configDB) },
-		func() error { return php_security.Update(knowledgeDB) },
-		func() error { return js.Follow(knowledgeDB, configDB) },
+	return runSteps(knowledgeDB, updateSteps(knowledgeDB, configDB))
+}
+
+// updateStep is one named step of an update.
+type updateStep struct {
+	name string
+	run  func() error
+}
+
+// updateSteps lists every update step in order. npm follows packages and is not a knowledge source.
+func updateSteps(knowledgeDB *bun.DB, configDB *bun.DB) []updateStep {
+	return []updateStep{
+		{knowledgedb.SourceLicenses, func() error { return licenses.Update(knowledgeDB) }},
+		{knowledgedb.SourceEPSS, func() error { return epss.Update(knowledgeDB) }},
+		{knowledgedb.SourceOSV, func() error { return osv.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceCWE, func() error { return cwe.Update(knowledgeDB) }},
+		{knowledgedb.SourceNVD, func() error { return nvd.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceGCVE, func() error { return gcve.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceFriendsOfPHP, func() error { return php_security.Update(knowledgeDB) }},
+		{"npm", func() error { return js.Follow(knowledgeDB, configDB) }},
+	}
+}
+
+// updateSources runs only the named update steps, in update order.
+func updateSources(knowledgeDB *bun.DB, configDB *bun.DB, names ...string) error {
+	steps := slices.DeleteFunc(updateSteps(knowledgeDB, configDB), func(step updateStep) bool {
+		return !slices.Contains(names, step.name)
 	})
+	return runSteps(knowledgeDB, steps)
+}
+
+// runSteps runs every step unless the database is a dated restore.
+func runSteps(knowledgeDB *bun.DB, steps []updateStep) error {
+	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
+		return err
+	}
+	runs := make([]func() error, len(steps))
+	for i, step := range steps {
+		runs[i] = step.run
+	}
+	return runAll(runs)
 }
 
 // UpdateAndValidate updates every source, then validates the result, also after a failed update.

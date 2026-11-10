@@ -29,6 +29,7 @@ func main() {
 	var checkoutDate = ""
 	var epssDate = ""
 	var sources = ""
+	var readOnly = false
 
 	// Bind flags
 	flag.StringVar(&action, "action", action, "Action to perform")
@@ -38,6 +39,7 @@ func main() {
 	flag.StringVar(&epssDate, "epss-date", epssDate, "Optional EPSS snapshot date (YYYY-MM-DD) imported by the update-asof and filter-asof actions")
 
 	flag.StringVar(&sources, "sources", sources, "Comma-separated source names for the reset-validation-floor action")
+	flag.BoolVar(&readOnly, "read-only", readOnly, "With the validate action, run the completeness gate: write nothing, print a JSON report and exit non-zero on any failed check")
 
 	// Parse flags
 	flag.Parse()
@@ -80,6 +82,10 @@ func main() {
 		})
 		log.Println("OSV update completed successfully")
 	case "validate":
+		if readOnly {
+			validateReadOnly()
+			return
+		}
 		logger.Info("Validating the knowledge database")
 
 		runLocked("Knowledge validation failed", func(service *KnowledgeService) error {
@@ -163,6 +169,34 @@ func runLocked(failure string, task func(*KnowledgeService) error) {
 	if err != nil {
 		logger.WithFields(logrus.Fields{"error": err.Error()}).Fatal(failure)
 	}
+}
+
+// validateReadOnly runs the completeness gate, prints its JSON report to stdout and
+// exits non-zero if any check failed. It refuses to run while an update holds the lock.
+func validateReadOnly() {
+	service, err := CreateKnowledgeService()
+	if err != nil {
+		logger.WithFields(logrus.Fields{"error": err.Error()}).Fatal("Failed to create knowledge service")
+	}
+	ctx := context.Background()
+	var report validation.GateReport
+	err = knowledge.WithUpdateLock(ctx, service.DB.Knowledge, func() error {
+		var gateErr error
+		report, gateErr = validation.RunGate(ctx, service.DB.Knowledge, service.DB.Config, time.Now())
+		return gateErr
+	})
+	service.Close()
+	if err != nil {
+		logger.WithFields(logrus.Fields{"error": err.Error()}).Fatal("Knowledge completeness gate could not run")
+	}
+	if err := report.WriteJSON(os.Stdout); err != nil {
+		logger.WithFields(logrus.Fields{"error": err.Error()}).Fatal("Failed to write the completeness gate report")
+	}
+	if !report.Passed {
+		logger.Error("Knowledge completeness gate failed")
+		os.Exit(1)
+	}
+	logger.Info("Knowledge completeness gate passed")
 }
 
 // importDatedEPSS imports the dated EPSS snapshot when one was requested.

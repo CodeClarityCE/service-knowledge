@@ -40,14 +40,12 @@ func serveNVD(t *testing.T, page func(w http.ResponseWriter, start int)) {
 	})
 }
 
-// serveRequests answers NVD API calls with handler.
+// serveRequests answers NVD API calls, with or without a date window, with handler.
 func serveRequests(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	original := apiURLTemplate
-	apiURLTemplate = server.URL + "/?resultsPerPage=%d&startIndex=%d&lastModStartDate=%s&lastModEndDate=%s"
-	t.Cleanup(func() { apiURLTemplate = original })
+	t.Cleanup(UseUpstream(server.URL))
 }
 
 func goodPage(total int) func(http.ResponseWriter) {
@@ -141,4 +139,92 @@ func TestSuccessAdvancesWatermarkWithoutClobberingConfig(t *testing.T) {
 	if got := testhelper.ConfigTime(t, db, "nvd_last"); !got.After(previous) {
 		t.Errorf("nvd_last = %v, want it advanced", got)
 	}
+}
+
+func linkCount(t *testing.T, db *bun.DB, id string) int {
+	t.Helper()
+	var n int
+	err := db.QueryRowContext(context.Background(),
+		"SELECT count(*) FROM package_vulnerability p JOIN nvd n ON p.nvd_id = n.id WHERE n.nvd_id = ?", id).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A CVE NVD defers is kept with its new status but loses the package links it had while analyzed.
+func TestDeferredRecordIsStoredWithoutPackageLinks(t *testing.T) {
+	db := setup(t)
+	analyzed := goodPage(1)
+	serveNVD(t, func(w http.ResponseWriter, _ int) { analyzed(w) })
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+	if linkCount(t, db, "CVE-2026-0001") == 0 {
+		t.Fatal("analyzed CVE should have package links")
+	}
+
+	serveNVD(t, func(w http.ResponseWriter, _ int) {
+		fmt.Fprintf(w, `{"totalResults":1,"vulnerabilities":[%s]}`, record("CVE-2026-0001", "Deferred"))
+	})
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	if err := db.NewRaw(`SELECT "vulnStatus" FROM nvd WHERE nvd_id = 'CVE-2026-0001'`).Scan(context.Background(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "Deferred" {
+		t.Errorf("status = %q, want Deferred", status)
+	}
+	if n := linkCount(t, db, "CVE-2026-0001"); n != 0 {
+		t.Errorf("deferred CVE keeps %d package links", n)
+	}
+}
+
+// An incremental run also records NVD's current total, from one request with no date window.
+func TestIncrementalRunRecordsTheCurrentUpstreamTotal(t *testing.T) {
+	db := setup(t)
+	if _, err := db.ExecContext(context.Background(), "UPDATE knowledge_source_sync SET upstream_total = 420000"); err != nil {
+		t.Fatal(err)
+	}
+	good := goodPage(1)
+	serveRequests(t, func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("lastModStartDate") != "" {
+			good(w)
+			return
+		}
+		if query.Get("resultsPerPage") != "1" {
+			t.Errorf("total request asks for %s results per page, want 1", query.Get("resultsPerPage"))
+		}
+		fmt.Fprint(w, `{"totalResults":421910,"vulnerabilities":[]}`)
+	})
+
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceNVD); got == nil || *got != 421910 {
+		t.Errorf("upstream_total = %v, want the current 421910", got)
+	}
+}
+
+// A run whose total request fails keeps its watermark, so the next run repeats the window.
+func TestFailedTotalRequestFailsTheIncrementalRun(t *testing.T) {
+	db := setup(t)
+	good := goodPage(1)
+	serveRequests(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("lastModStartDate") == "" {
+			http.Error(w, "nope", http.StatusBadGateway)
+			return
+		}
+		good(w)
+	})
+
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed total request should fail the source")
+	}
+	testhelper.AssertFailedWithWatermark(t, db, knowledge.SourceNVD, previous)
 }

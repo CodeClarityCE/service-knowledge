@@ -115,7 +115,7 @@ func TestReconcileNvdAndGcveRefuseImplausibleRemoval(t *testing.T) {
 func TestReconcileNvdLeavesRetiredRecordsOutOfTheCount(t *testing.T) {
 	db := setupReconcileDB(t)
 	seedNvd(t, db, "CVE-1", "CVE-2")
-	if err := RetireRejectedNvd(db, []knowledge.NVDItem{{NVDId: "CVE-2", LastModified: "2026-01-01T00:00:00"}}); err != nil {
+	if err := UpdateNvd(db, []knowledge.NVDItem{{NVDId: "CVE-2", VulnStatus: "Rejected", LastModified: "2026-01-01T00:00:00"}}); err != nil {
 		t.Fatal(err)
 	}
 

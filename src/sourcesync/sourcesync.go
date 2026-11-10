@@ -36,9 +36,48 @@ func NewLogger() *logrus.Logger {
 // synchronized up to. Run ignores that point when the sync also returns an error.
 type Sync func() (time.Time, error)
 
+// Result is what one successful sync of a source saw.
+type Result struct {
+	// Watermark is the point the source is now completely synchronized up to.
+	Watermark time.Time
+	// UpstreamTotal is how many records upstream holds. Leave it nil when the run saw
+	// only part of upstream, such as an incremental window, to keep the recorded total.
+	UpstreamTotal *int64
+}
+
+// CountedSync does one source's work and reports what upstream held.
+type CountedSync func() (Result, error)
+
+// ErrNoUpstreamRecords means upstream offered no records, so the source fails instead of syncing nothing.
+var ErrNoUpstreamRecords = errors.New("upstream has no records")
+
+// Total returns n as an upstream total.
+func Total(n int) *int64 {
+	total := int64(n)
+	return &total
+}
+
+// DistinctTotal returns the number of different ids as an upstream total.
+func DistinctTotal(ids []string) *int64 {
+	distinct := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		distinct[id] = struct{}{}
+	}
+	return Total(len(distinct))
+}
+
 // Run performs sync and records its outcome. The returned error is non-nil if
 // the sync failed or its outcome could not be recorded.
 func Run(db *bun.DB, source string, sync Sync) error {
+	return RunCounted(db, source, func() (Result, error) {
+		watermark, err := sync()
+		return Result{Watermark: watermark}, err
+	})
+}
+
+// RunCounted is Run for a sync that also reports the upstream total, which is
+// recorded only on success. A total of zero fails the source.
+func RunCounted(db *bun.DB, source string, sync CountedSync) error {
 	ctx := context.Background()
 	started := time.Now()
 
@@ -47,9 +86,12 @@ func Run(db *bun.DB, source string, sync Sync) error {
 		return fmt.Errorf("%s: record run start: %w", source, err)
 	}
 
-	watermark, syncErr := runRecovering(sync)
+	result, syncErr := runRecovering(sync)
+	if syncErr == nil && result.UpstreamTotal != nil && *result.UpstreamTotal == 0 {
+		syncErr = ErrNoUpstreamRecords
+	}
 	if syncErr != nil {
-		watermark = time.Time{}
+		result = Result{}
 	}
 
 	rows, countErr := countRows(ctx, db, source)
@@ -57,12 +99,12 @@ func Run(db *bun.DB, source string, sync Sync) error {
 		logger.WithFields(logrus.Fields{"source": source, "error": countErr.Error()}).Warn("Could not count knowledge source rows")
 	}
 
-	recordErr := markFinished(ctx, db, source, watermark, syncErr, rows)
+	recordErr := markFinished(ctx, db, source, result, syncErr, rows)
 	if recordErr != nil {
 		recordErr = fmt.Errorf("%s: record run outcome: %w", source, recordErr)
 	}
 
-	logOutcome(source, started, watermark, rows, syncErr)
+	logOutcome(source, started, result, rows, syncErr)
 	if syncErr != nil {
 		syncErr = fmt.Errorf("%s: %w", source, syncErr)
 	}
@@ -152,10 +194,10 @@ func SetConfigLast(configDB *bun.DB, column string, syncedAt time.Time) error {
 }
 
 // runRecovering turns a panic in sync into an error so later sources still run.
-func runRecovering(sync Sync) (watermark time.Time, err error) {
+func runRecovering(sync CountedSync) (result Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			watermark, err = time.Time{}, fmt.Errorf("panic: %v", p)
+			result, err = Result{}, fmt.Errorf("panic: %v", p)
 		}
 	}()
 	return sync()
@@ -169,7 +211,7 @@ func markStarted(ctx context.Context, db *bun.DB, source string, started time.Ti
 	return err
 }
 
-func markFinished(ctx context.Context, db *bun.DB, source string, watermark time.Time, syncErr error, rows *int64) error {
+func markFinished(ctx context.Context, db *bun.DB, source string, result Result, syncErr error, rows *int64) error {
 	outcome := knowledge.SourceSyncSuccess
 	var lastError *string
 	if syncErr != nil {
@@ -178,8 +220,8 @@ func markFinished(ctx context.Context, db *bun.DB, source string, watermark time
 		lastError = &stored
 	}
 	var newWatermark *time.Time
-	if !watermark.IsZero() {
-		newWatermark = &watermark
+	if !result.Watermark.IsZero() {
+		newWatermark = &result.Watermark
 	}
 
 	_, err := db.ExecContext(ctx, `
@@ -189,9 +231,10 @@ func markFinished(ctx context.Context, db *bun.DB, source string, watermark time
 			last_outcome = ?,
 			last_error = ?,
 			row_count = COALESCE(?, row_count),
+			upstream_total = COALESCE(?, upstream_total),
 			bulk_completed_at = CASE WHEN ? THEN NULL ELSE bulk_completed_at END
 		WHERE source = ?`,
-		newWatermark, time.Now(), outcome, lastError, rows, syncErr == nil, source)
+		newWatermark, time.Now(), outcome, lastError, rows, result.UpstreamTotal, syncErr == nil, source)
 	return err
 }
 
@@ -214,14 +257,17 @@ func storableError(err error) string {
 	return strings.ToValidUTF8(text[:maxStoredErrorLength], "")
 }
 
-func logOutcome(source string, started time.Time, watermark time.Time, rows *int64, syncErr error) {
+func logOutcome(source string, started time.Time, result Result, rows *int64, syncErr error) {
 	fields := logrus.Fields{
 		"source":           source,
 		"outcome":          knowledge.SourceSyncSuccess,
 		"duration_seconds": time.Since(started).Seconds(),
 	}
-	if !watermark.IsZero() {
-		fields["watermark"] = watermark.UTC().Format(time.RFC3339)
+	if !result.Watermark.IsZero() {
+		fields["watermark"] = result.Watermark.UTC().Format(time.RFC3339)
+	}
+	if result.UpstreamTotal != nil {
+		fields["upstream_total"] = *result.UpstreamTotal
 	}
 	if rows != nil {
 		fields["row_count"] = *rows
