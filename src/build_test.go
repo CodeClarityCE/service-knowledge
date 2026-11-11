@@ -362,3 +362,117 @@ func TestBuiltSourcesAreKnowledgeSources(t *testing.T) {
 		}
 	}
 }
+
+func TestNVDConfigurationsToleranceComesFromTheEnvironment(t *testing.T) {
+	b := newBuild(t)
+	b.mustUpdate(t)
+	// One of the two Analyzed or Modified CVEs, as NVD serves some old Modified CVEs
+	b.exec(t, b.knowledge, "UPDATE nvd SET configurations = NULL WHERE nvd_id = 'CVE-2024-0002'")
+	if failed := failedChecks(b.gate(t)); !slices.Equal(failed, []string{"nvd.configurations"}) {
+		t.Fatalf("failed checks = %v, want nvd.configurations at the default tolerance", failed)
+	}
+
+	t.Setenv("KNOWLEDGE_GATE_NVD_MISSING_CONFIGURATIONS_PERCENT", "50")
+
+	if failed := failedChecks(b.gate(t)); len(failed) > 0 {
+		t.Errorf("failed checks = %v, want none at 50%%", failed)
+	}
+}
+
+// waivedChecks lists the checks the report marks as waived.
+func waivedChecks(report validation.GateReport) []string {
+	var names []string
+	for _, check := range report.Checks {
+		if check.Waived {
+			names = append(names, check.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestWaivedSourceChecksDoNotFailTheGateAndAreRecorded(t *testing.T) {
+	source := builtSourceNames()[0]
+	other := builtSourceNames()[1]
+	b := newBuild(t)
+	b.mustUpdate(t)
+	b.exec(t, b.knowledge, "UPDATE knowledge_source_sync SET last_outcome = 'failure', watermark = NULL WHERE source = ?", source)
+	t.Setenv("KNOWLEDGE_GATE_WAIVE", source+".*")
+	t.Setenv("KNOWLEDGE_GATE_WAIVE_REASON", "upstream feed is empty")
+
+	report := b.gate(t)
+
+	want := []string{source + ".last_outcome", source + ".watermark"}
+	if !report.Passed {
+		t.Errorf("report failed on %v", failedChecks(report))
+	}
+	if got := waivedChecks(report); !slices.Equal(got, want) {
+		t.Errorf("waived checks = %v, want %v", got, want)
+	}
+	if report.Waiver == nil || report.Waiver.Reason != "upstream feed is empty" || !slices.Equal(report.Waiver.Checks, want) {
+		t.Errorf("waiver = %+v, want the reason and %v", report.Waiver, want)
+	}
+	if got := failedChecks(report); !slices.Equal(got, want) {
+		t.Errorf("failed checks = %v, want the waived ones still reported as failing", got)
+	}
+
+	b.exec(t, b.knowledge, "UPDATE knowledge_source_sync SET last_outcome = 'failure' WHERE source = ?", other)
+	if report := b.gate(t); report.Passed {
+		t.Errorf("a failure outside the waiver passed the gate")
+	}
+}
+
+func TestWaiverNamingAnExactCheckWaivesOnlyIt(t *testing.T) {
+	source := builtSourceNames()[0]
+	b := newBuild(t)
+	b.mustUpdate(t)
+	b.exec(t, b.knowledge, "UPDATE knowledge_source_sync SET last_outcome = 'failure', watermark = NULL WHERE source = ?", source)
+	t.Setenv("KNOWLEDGE_GATE_WAIVE", source+".watermark")
+	t.Setenv("KNOWLEDGE_GATE_WAIVE_REASON", "testing")
+
+	report := b.gate(t)
+
+	if report.Passed {
+		t.Error("the unwaived last_outcome failure passed the gate")
+	}
+	if got := waivedChecks(report); !slices.Equal(got, []string{source + ".watermark"}) {
+		t.Errorf("waived checks = %v", got)
+	}
+}
+
+func TestPassingGateRecordsNoWaiver(t *testing.T) {
+	b := newBuild(t)
+	b.mustUpdate(t)
+	t.Setenv("KNOWLEDGE_GATE_WAIVE", builtSourceNames()[0]+".*")
+	t.Setenv("KNOWLEDGE_GATE_WAIVE_REASON", "testing")
+
+	report := b.gate(t)
+
+	if !report.Passed || report.Waiver != nil || len(waivedChecks(report)) > 0 {
+		t.Errorf("report = passed %v, waiver %+v, want a pass with nothing waived", report.Passed, report.Waiver)
+	}
+}
+
+func TestGateRefusesAnInvalidWaiver(t *testing.T) {
+	cases := []struct{ name, waive, reason string }{
+		{"no reason", "nvd.*", ""},
+		{"structural check", "config.rows", "testing"},
+		{"migrations", "migrations.knowledge", "testing"},
+		{"dated restore", "dated_restore", "testing"},
+		{"unknown source", "nope.*", "testing"},
+		{"everything", "*", "testing"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := newBuild(t)
+			t.Setenv("KNOWLEDGE_GATE_WAIVE", c.waive)
+			t.Setenv("KNOWLEDGE_GATE_WAIVE_REASON", c.reason)
+
+			_, err := validation.RunGate(context.Background(), b.knowledge, b.config, time.Now(), builtSourceNames()...)
+
+			if err == nil {
+				t.Errorf("waiver %q with reason %q was accepted", c.waive, c.reason)
+			}
+		})
+	}
+}

@@ -9,6 +9,9 @@ import (
 // defaultUpstreamTolerancePercent is how far stored records may be from the recorded upstream total.
 const defaultUpstreamTolerancePercent = 1
 
+// defaultMissingConfigurationsPercent is the share of Analyzed or Modified NVD CVEs that may lack configurations.
+const defaultMissingConfigurationsPercent = 0.1
+
 // envFloat reads a non-negative number from the environment, or returns fallback when unset or invalid.
 func envFloat(name string, fallback float64) float64 {
 	if value, err := strconv.ParseFloat(os.Getenv(name), 64); err == nil && value >= 0 {
