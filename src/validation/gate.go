@@ -24,12 +24,16 @@ type Check struct {
 	Pass     bool   `json:"pass"`
 	// Detail explains a failure, or the error that stopped the check.
 	Detail string `json:"detail,omitempty"`
+	// Waived marks a failing check that the waiver let pass.
+	Waived bool `json:"waived,omitempty"`
 }
 
 // GateReport is the completeness gate's result: every check, passing or not.
 type GateReport struct {
 	Passed bool    `json:"passed"`
 	Checks []Check `json:"checks"`
+	// Waiver lists the failing checks that were waived and why; absent when none were.
+	Waiver *Waiver `json:"waiver,omitempty"`
 }
 
 // WriteJSON writes the report as indented JSON.
@@ -61,6 +65,10 @@ func registerSourceChecks(source string, checks ...SourceCheck) {
 func RunGate(ctx context.Context, knowledgeDB, configDB *bun.DB, now time.Time, sources ...string) (GateReport, error) {
 	if len(sources) == 0 {
 		sources = knowledge.AllSources
+	}
+	waiver, err := readWaiver(sources)
+	if err != nil {
+		return GateReport{}, err
 	}
 	var checks []Check
 	run := func(check func(Gate) Check) error {
@@ -100,9 +108,9 @@ func RunGate(ctx context.Context, knowledgeDB, configDB *bun.DB, now time.Time, 
 		}
 	}
 
-	report := GateReport{Passed: true, Checks: checks}
+	report := GateReport{Passed: true, Checks: checks, Waiver: waiver.apply(checks)}
 	for _, check := range checks {
-		report.Passed = report.Passed && check.Pass
+		report.Passed = report.Passed && (check.Pass || check.Waived)
 	}
 	return report, nil
 }
