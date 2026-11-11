@@ -31,11 +31,9 @@ func init() {
 	registerFakeSource(fakeSource{
 		name: knowledgedb.SourceFriendsOfPHP,
 		createTables: func(t *testing.T, db *bun.DB) {
-			testhelper.CreateTables(t, db, (*knowledgedb.FriendsOfPHPAdvisory)(nil), (*knowledgedb.PackageVulnerability)(nil))
+			testhelper.CreateFriendsOfPHPTable(t, db)
+			testhelper.CreateTables(t, db, (*knowledgedb.PackageVulnerability)(nil))
 			testhelper.CreatePackageLinkIndexes(t, db)
-			if _, err := db.Exec("CREATE UNIQUE INDEX ON friends_of_php (advisory_id)"); err != nil {
-				t.Fatal(err)
-			}
 		},
 		serve: func(t *testing.T, empty bool) {
 			files := fullFriendsOfPHPRepository

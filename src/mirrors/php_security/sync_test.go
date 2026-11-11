@@ -80,11 +80,9 @@ func (r *repository) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 func setup(t *testing.T, handler http.Handler) *bun.DB {
 	t.Helper()
 	db := testhelper.SetupSyncTestDB(t)
-	testhelper.CreateTables(t, db, (*knowledge.FriendsOfPHPAdvisory)(nil), (*knowledge.PackageVulnerability)(nil))
+	testhelper.CreateFriendsOfPHPTable(t, db)
+	testhelper.CreateTables(t, db, (*knowledge.PackageVulnerability)(nil))
 	testhelper.CreatePackageLinkIndexes(t, db)
-	if _, err := db.ExecContext(context.Background(), "CREATE UNIQUE INDEX ON friends_of_php (advisory_id)"); err != nil {
-		t.Fatal(err)
-	}
 	testhelper.SeedWatermark(t, db, knowledge.SourceFriendsOfPHP, previous)
 
 	server := httptest.NewServer(handler)

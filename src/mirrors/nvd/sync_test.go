@@ -21,6 +21,7 @@ const cve = `{"cve":{"id":"CVE-2026-0001","vulnStatus":"Analyzed","configuration
 func setup(t *testing.T) *bun.DB {
 	t.Helper()
 	t.Setenv("NVD_API_KEY", "test-key")
+	fastRetries(t)
 	db := testhelper.SetupSyncTestDB(t)
 	testhelper.CreateTables(t, db, (*knowledge.NVDItem)(nil), (*knowledge.PackageVulnerability)(nil))
 	testhelper.CreatePackageLinkIndexes(t, db)

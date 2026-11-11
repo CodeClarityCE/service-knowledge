@@ -146,8 +146,7 @@ func syncFull(db *bun.DB, db_config *bun.DB, apiKey string, rateLimiter chan str
 // upstreamTotal asks NVD for its current number of CVEs with one single-result page and no date window.
 func upstreamTotal(apiKey string, rateLimiter chan struct{}) (int, error) {
 	var result NVDStats
-	<-rateLimiter
-	if err := fetchNVDStats(fullURLTemplateFor(1, 0), apiKey, &result); err != nil {
+	if err := get(fullURLTemplateFor(1, 0), apiKey, rateLimiter, &result); err != nil {
 		return 0, fmt.Errorf("fetch NVD total: %w", err)
 	}
 	return result.TotalResults, nil
@@ -174,7 +173,7 @@ func syncPages(db *bun.DB, urlFor pageURL, apiKey string, rateLimiter chan struc
 	const elementPage = 2000
 
 	var result NVDStats
-	if err := fetchNVDStats(urlFor(elementPage, 0), apiKey, &result); err != nil {
+	if err := get(urlFor(elementPage, 0), apiKey, rateLimiter, &result); err != nil {
 		return 0, nil, fmt.Errorf("fetch NVD stats: %w", err)
 	}
 	log.Printf("Total CVEs: %d", result.TotalResults)
@@ -259,39 +258,6 @@ func nvdRecordKeepsLinks(item knowledge.NVDItem) bool {
 	return item.VulnStatus != pgsql.NvdStatusRejected && item.VulnStatus != pgsql.NvdStatusDeferred
 }
 
-func fetchNVDStats(url, apiKey string, result *NVDStats) error {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
-	}
-
-	if apiKey != "" {
-		req.Header.Add("apiKey", apiKey)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("error executing request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected response status: %s", resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("error reading response body: %w", err)
-	}
-
-	err = json.Unmarshal(body, result)
-	if err != nil {
-		return fmt.Errorf("error unmarshalling response body: %w", err)
-	}
-
-	return nil
-}
-
 // extractPackageVulnerabilitiesFromNVD extracts package-vulnerability relationships from NVD items.
 // Uses the nvdIdToUUID map to set the FK reference to the NVD table.
 // Note: NVD uses CPE which doesn't map directly to npm/packagist packages.
@@ -334,61 +300,71 @@ func extractPackageVulnerabilitiesFromNVD(nvdItems []knowledge.NVDItem, nvdIdToU
 	return pkgVulns
 }
 
+// maxAttempts bounds the requests for one NVD call.
+const maxAttempts = 5
+
+// retryBackoff is the wait after the first failed attempt; it doubles after each later one.
+var retryBackoff = 2 * time.Second
+
+// downloadBatch fetches the records of one NVD page.
 func downloadBatch(url, apiKey string, rateLimiter chan struct{}) ([]knowledge.NVDItem, error) {
-	var resp *http.Response
-	var err error
-	var retries int
-	maxRetries := 5
+	var result knowledge.NVD
+	if err := get(url, apiKey, rateLimiter, &result); err != nil {
+		return nil, err
+	}
+	return knowledge.GetVulns(result), nil
+}
 
-	for retries = 0; retries < maxRetries; retries++ {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("error creating request: %w", err)
+// get decodes the JSON answer to url into result, waiting for the rate limiter before every attempt.
+// Network errors, 429 and 5xx answers are retried with backoff; any other status fails at once.
+func get(url, apiKey string, rateLimiter chan struct{}, result any) error {
+	var lastErr error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			log.Printf("NVD request failed: %v, retrying (%d/%d)", lastErr, attempt+1, maxAttempts)
+			time.Sleep(retryBackoff << (attempt - 1))
 		}
-
-		if apiKey != "" {
-			req.Header.Add("apiKey", apiKey)
+		<-rateLimiter
+		body, retry, err := request(url, apiKey)
+		if err == nil {
+			if err := json.Unmarshal(body, result); err != nil {
+				return fmt.Errorf("error unmarshalling response body: %w", err)
+			}
+			return nil
 		}
-
-		<-rateLimiter // Wait for rate limiter token
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			log.Printf("error executing request: %v, retrying... (%d/%d)", err, retries+1, maxRetries)
-			time.Sleep(time.Duration(2<<retries) * time.Second) // Exponential backoff
-			continue
+		if !retry {
+			return err
 		}
+		lastErr = err
+	}
+	return fmt.Errorf("gave up after %d attempts: %w", maxAttempts, lastErr)
+}
 
-		if resp.StatusCode == http.StatusTooManyRequests {
-			log.Printf("rate limit exceeded, retrying... (%d/%d)", retries+1, maxRetries)
-			time.Sleep(time.Duration(2<<retries) * time.Second) // Exponential backoff
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
-		}
-
-		break
+// request makes one GET of url and returns its body; retry tells whether a failure is worth retrying.
+func request(url, apiKey string) (body []byte, retry bool, err error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("error creating request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Add("apiKey", apiKey)
 	}
 
-	if retries == maxRetries {
-		return nil, fmt.Errorf("max retries reached, unable to fetch data")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, true, fmt.Errorf("error executing request: %w", err)
 	}
-
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		return nil, retry, fmt.Errorf("unexpected response status: %s", resp.Status)
 	}
-
-	var result knowledge.NVD
-	err = json.Unmarshal(body, &result)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshalling response body: %w", err)
+		return nil, true, fmt.Errorf("error reading response body: %w", err)
 	}
-
-	return knowledge.GetVulns(result), nil
+	return body, false, nil
 }
 
 // UseUpstream points the mirror at another NVD API base URL and returns a function that undoes it.
