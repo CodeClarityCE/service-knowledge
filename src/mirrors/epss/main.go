@@ -2,37 +2,65 @@ package epss
 
 import (
 	"log"
+	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
 )
 
-// Update is a function that updates the CWEs in the knowledge database graph.
-// It downloads the CWEs from the graph, and then updates them.
+// Update imports the current EPSS scores and removes CVEs the file no longer contains.
 func Update(db *bun.DB) error {
-	return UpdateAsOf(db, "")
+	return sourcesync.RunCounted(db, knowledge.SourceEPSS, func() (sourcesync.Result, error) {
+		syncedAt := time.Now()
+		cves, err := importScores(db, "")
+		if err != nil {
+			return sourcesync.Result{}, err
+		}
+		if err := pgsql.ReconcileEPSS(db, cves); err != nil {
+			return sourcesync.Result{}, err
+		}
+		// The total is the file's score rows.
+		return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: sourcesync.Total(len(cves))}, nil
+	})
 }
 
 // UpdateAsOf imports the EPSS scores published on the given date (YYYY-MM-DD).
-// An empty date imports the current scores, identical to Update.
+// A dated file is a partial view, so it never removes stored CVEs.
 func UpdateAsOf(db *bun.DB, date string) error {
+	_, err := importScores(db, date)
+	return err
+}
+
+// importScores stores a fully parsed scores file and returns its CVEs.
+func importScores(db *bun.DB, date string) ([]string, error) {
 	log.Println("Start updating EPSS scores")
 	epss, err := downloadEPSS(epssURL(date))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = pgsql.UpdateEPSS(db, epss)
-	if err != nil {
-		return err
+	if err := pgsql.UpdateEPSS(db, epss); err != nil {
+		return nil, err
 	}
-	return nil
+	cves := make([]string, len(epss))
+	for i, score := range epss {
+		cves[i] = score.CVE
+	}
+	return cves, nil
 }
 
 // epssURL returns the download URL for the EPSS scores file: the current file
 // when date is empty, or the dated snapshot (YYYY-MM-DD) otherwise.
 func epssURL(date string) string {
 	if date == "" {
-		return "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+		return baseURL + "epss_scores-current.csv.gz"
 	}
-	return "https://epss.empiricalsecurity.com/epss_scores-" + date + ".csv.gz"
+	return baseURL + "epss_scores-" + date + ".csv.gz"
+}
+
+// UseUpstream points the mirror at another base URL for score files and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	return override.Set(&baseURL, url)
 }

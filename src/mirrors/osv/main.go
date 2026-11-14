@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/override"
+	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
 	config "github.com/CodeClarityCE/utility-types/config_db"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
@@ -72,26 +75,62 @@ var ImportedEcosystems = []string{
 	"npm",
 }
 
+// dumpBaseURL hosts one all.zip per ecosystem.
+var dumpBaseURL = "https://osv-vulnerabilities.storage.googleapis.com/"
+
 // Update updates the licenses in the OSV (Open Source Vulnerabilities) database for the specified ecosystems.
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
 func Update(db *bun.DB, db_config *bun.DB) error {
+	return sourcesync.RunCounted(db, knowledge.SourceOSV, func() (sourcesync.Result, error) {
+		return sync(db, db_config)
+	})
+}
+
+// sync imports every ecosystem and, on full success, returns the import's start
+// time and the number of distinct advisories the archives held.
+func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	log.Println("Start updating OSV vulnerabilities")
+	syncedAt := time.Now()
 	bar := progressbar.Default(int64(len(ImportedEcosystems)))
 
-	for _, ecosystem := range ImportedEcosystems {
+	var snapshotIDs []string
+	err := importEcosystems(ImportedEcosystems, func(ecosystem string) error {
+		defer bar.Add(1)
 		log.Printf("Processing ecosystem: %s", ecosystem)
-		url := "https://osv-vulnerabilities.storage.googleapis.com/" + ecosystem + "/all.zip"
-
-		if err := processEcosystem(db, ecosystem, url); err != nil {
-			log.Printf("Error processing ecosystem %s: %v", ecosystem, err)
-			// Continue with other ecosystems even if one fails
-		}
-
-		bar.Add(1)
+		url := dumpBaseURL + ecosystem + "/all.zip"
+		return processEcosystem(db, ecosystem, url, &snapshotIDs)
+	})
+	if err != nil {
+		return sourcesync.Result{}, err
+	}
+	// One advisory can appear in several ecosystems.
+	total := sourcesync.DistinctTotal(snapshotIDs)
+	if *total == 0 {
+		return sourcesync.Result{}, fmt.Errorf("OSV archives hold no advisories: %w", sourcesync.ErrNoUpstreamRecords)
 	}
 
-	return SetLastOSVSync(db_config, time.Now())
+	// Reached only when every ecosystem downloaded, parsed and stored without error.
+	if err := pgsql.ReconcileOsv(db, snapshotIDs, ImportedEcosystems, syncedAt); err != nil {
+		return sourcesync.Result{}, err
+	}
+
+	if err := SetLastOSVSync(db_config, syncedAt); err != nil {
+		return sourcesync.Result{}, err
+	}
+	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
+}
+
+// importEcosystems tries every ecosystem and reports all that failed.
+func importEcosystems(ecosystems []string, process func(string) error) error {
+	var failures []error
+	for _, ecosystem := range ecosystems {
+		if err := process(ecosystem); err != nil {
+			log.Printf("Error processing ecosystem %s: %v", ecosystem, err)
+			failures = append(failures, fmt.Errorf("%s: %w", ecosystem, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // SetLastOSVSync stamps osv_last on the shared config row. The update is
@@ -144,8 +183,17 @@ func ParseAdvisory(data []byte) (knowledge.OSVItem, error) {
 	// Extract CWE IDs and CVE ID efficiently
 	result.Cwes = extractCWEIds(result.DatabaseSpecific)
 	result.Cve = extractCVEId(result.Aliases)
+	result.Kind = advisoryKind(result.OSVId)
 
 	return result, nil
+}
+
+// advisoryKind tells malicious package advisories apart by their MAL- ID prefix.
+func advisoryKind(osvId string) string {
+	if strings.HasPrefix(osvId, "MAL-") {
+		return knowledge.AdvisoryKindMalicious
+	}
+	return knowledge.AdvisoryKindVulnerability
 }
 
 // extractCWEIds efficiently extracts CWE IDs from the database specific field
@@ -184,16 +232,11 @@ func extractCVEId(aliases []string) string {
 	return ""
 }
 
-// mapOSVEcosystem maps OSV ecosystem names to our internal format
+// mapOSVEcosystem maps OSV ecosystem names to our internal format.
+// Variants such as Packagist:https://packages.drupal.org/8 keep only the base name.
 func mapOSVEcosystem(ecosystem string) string {
-	switch strings.ToLower(ecosystem) {
-	case "npm":
-		return "npm"
-	case "packagist":
-		return "packagist"
-	default:
-		return strings.ToLower(ecosystem)
-	}
+	base, _, _ := strings.Cut(ecosystem, ":")
+	return strings.ToLower(base)
 }
 
 // extractPackageVulnerabilities extracts package-vulnerability relationships from OSV items.
@@ -202,6 +245,11 @@ func extractPackageVulnerabilities(osvItems []knowledge.OSVItem, osvIdToUUID map
 	var pkgVulns []knowledge.PackageVulnerability
 
 	for _, osv := range osvItems {
+		// Withdrawn advisories keep no package links.
+		if osv.Withdrawn != "" {
+			continue
+		}
+
 		// Look up the UUID for this OSV record
 		osvUUID, ok := osvIdToUUID[osv.OSVId]
 		if !ok {
@@ -227,12 +275,17 @@ func extractPackageVulnerabilities(osvItems []knowledge.OSVItem, osvIdToUUID map
 }
 
 // processEcosystem downloads and processes vulnerabilities for a single ecosystem
-func processEcosystem(db *bun.DB, ecosystem, url string) error {
+// and appends every advisory id it read to snapshotIDs.
+func processEcosystem(db *bun.DB, ecosystem, url string, snapshotIDs *[]string) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", url, err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status downloading %s: %s", url, resp.Status)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -247,28 +300,33 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	// Process files in batches for better performance
 	const batchSize = 100
 	var osvBatch []knowledge.OSVItem
+	var batchFailures []error
 
 	// Read all the files from zip archive
 	for _, zipFile := range zipReader.File {
 		unzippedFileBytes, err := readZipFile(zipFile)
 		if err != nil {
 			log.Printf("Error reading zip file %s: %v", zipFile.Name, err)
+			batchFailures = append(batchFailures, fmt.Errorf("read %s: %w", zipFile.Name, err))
 			continue
 		}
 
 		result, err := ParseAdvisory(unzippedFileBytes)
 		if err != nil {
 			log.Printf("Error unmarshaling JSON from %s: %v", zipFile.Name, err)
+			batchFailures = append(batchFailures, fmt.Errorf("parse %s: %w", zipFile.Name, err))
 			continue
 		}
 
 		// Add to batch
 		osvBatch = append(osvBatch, result)
+		*snapshotIDs = append(*snapshotIDs, result.OSVId)
 
 		// Process batch when it reaches the desired size
 		if len(osvBatch) >= batchSize {
 			if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 				log.Printf("Error processing batch for ecosystem %s: %v", ecosystem, err)
+				batchFailures = append(batchFailures, err)
 			}
 			osvBatch = osvBatch[:0] // Reset slice but keep capacity
 		}
@@ -278,10 +336,11 @@ func processEcosystem(db *bun.DB, ecosystem, url string) error {
 	if len(osvBatch) > 0 {
 		if err := InsertBatch(db, osvBatch, ecosystem); err != nil {
 			log.Printf("Error processing final batch for ecosystem %s: %v", ecosystem, err)
+			batchFailures = append(batchFailures, err)
 		}
 	}
 
-	return nil
+	return errors.Join(batchFailures...)
 }
 
 // InsertBatch inserts OSV records and creates package-vulnerability links.
@@ -304,13 +363,25 @@ func InsertBatch(db *bun.DB, osvBatch []knowledge.OSVItem, ecosystem string) err
 		return fmt.Errorf("failed to get OSV UUIDs: %w", err)
 	}
 
-	// Step 3: Extract and insert package-vulnerability relationships with FK
+	// Step 3: Apply withdrawals and reactivations
+	if err := pgsql.SyncOsvRetirement(db, osvIds); err != nil {
+		return err
+	}
+
+	// Step 4: Replace the package links of this batch
+	advisoryUUIDs := make([]uuid.UUID, 0, len(osvIdToUUID))
+	for _, id := range osvIdToUUID {
+		advisoryUUIDs = append(advisoryUUIDs, id)
+	}
 	pkgVulns := extractPackageVulnerabilities(osvBatch, osvIdToUUID)
-	if len(pkgVulns) > 0 {
-		if err := pgsql.BatchInsertOsvPackageVulnerabilities(db, pkgVulns); err != nil {
-			log.Printf("Error inserting package vulnerabilities for ecosystem %s: %v", ecosystem, err)
-		}
+	if err := pgsql.ReplaceOsvPackageLinks(db, advisoryUUIDs, pkgVulns); err != nil {
+		return fmt.Errorf("replace package links for %s: %w", ecosystem, err)
 	}
 
 	return nil
+}
+
+// UseUpstream points the mirror at another base URL for ecosystem archives and returns a function that undoes it.
+func UseUpstream(url string) (restore func()) {
+	return override.Set(&dumpBaseURL, url)
 }

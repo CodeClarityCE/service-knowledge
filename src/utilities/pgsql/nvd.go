@@ -9,63 +9,85 @@ import (
 	"github.com/uptrace/bun"
 )
 
-func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
-	// Start a transaction
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			tx.Rollback()
-			panic(p)
-		} else if err != nil {
-			tx.Rollback()
-		} else {
-			tx.Commit()
-		}
-	}()
+// NVD vulnStatus values with special handling. Only Analyzed and Modified CVEs are matched.
+const (
+	NvdStatusRejected = "Rejected"
+	NvdStatusDeferred = "Deferred"
+	NvdStatusAnalyzed = "Analyzed"
+	NvdStatusModified = "Modified"
+)
 
+// nvdItemsToWrite keeps the last copy of each CVE, because one upsert cannot touch the same row twice.
+// It splits off rejected items, which are retired rather than updated.
+func nvdItemsToWrite(nvd []knowledge.NVDItem) (items, rejected []knowledge.NVDItem) {
+	seen := make(map[string]int, len(nvd))
+	unique := make([]knowledge.NVDItem, 0, len(nvd))
+	for _, item := range nvd {
+		if idx, exists := seen[item.NVDId]; exists {
+			unique[idx] = item
+		} else {
+			seen[item.NVDId] = len(unique)
+			unique = append(unique, item)
+		}
+	}
+	for _, item := range unique {
+		if item.VulnStatus == NvdStatusRejected {
+			rejected = append(rejected, item)
+		} else {
+			items = append(items, item)
+		}
+	}
+	return items, rejected
+}
+
+// UpdateNvd stores a page of NVD items on nvd_id in one transaction. Rejected CVEs are
+// stored if new, otherwise keep their content, and are retired with their rejection date.
+func UpdateNvd(db *bun.DB, nvd []knowledge.NVDItem) error {
+	items, rejected := nvdItemsToWrite(nvd)
+	if len(items) == 0 && len(rejected) == 0 {
+		return nil
+	}
+	normalizeNvdDates(items)
+	normalizeNvdDates(rejected)
 	ctx := context.Background()
 
-	// Batch insert and update
-	var newItems []knowledge.NVDItem
-	var existingItems []knowledge.NVDItem
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for NVD update: %w", err)
+	}
+	defer tx.Rollback()
 
-	for _, vuln := range nvd {
-		// Skip items that are rejected or deferred
-		// This is to avoid inserting or updating items that are not relevant
-		// in the NVD database.
-		if vuln.VulnStatus == "Rejected" || vuln.VulnStatus == "Deferred" {
-			continue
-		}
-
-		exists, err := tx.NewSelect().Model(&vuln).Where("nvd_id = ?", vuln.NVDId).Exists(ctx)
+	if len(items) > 0 {
+		_, err = tx.NewInsert().
+			Model(&items).
+			On("CONFLICT (nvd_id) DO UPDATE SET \"sourceIdentifier\" = EXCLUDED.\"sourceIdentifier\", published = EXCLUDED.published, \"lastModified\" = EXCLUDED.\"lastModified\", \"vulnStatus\" = EXCLUDED.\"vulnStatus\", descriptions = EXCLUDED.descriptions, vlai_score = EXCLUDED.vlai_score, vlai_confidence = EXCLUDED.vlai_confidence, metrics = EXCLUDED.metrics, weaknesses = EXCLUDED.weaknesses, configurations = EXCLUDED.configurations, \"affectedFlattened\" = EXCLUDED.\"affectedFlattened\", affected = EXCLUDED.affected, \"references\" = EXCLUDED.\"references\"").
+			Exec(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to check existence for NVD item %v: %w", vuln.NVDId, err)
+			return fmt.Errorf("failed to upsert %d NVD items: %w", len(items), err)
 		}
-
-		if !exists {
-			newItems = append(newItems, vuln)
-		} else {
-			existingItems = append(existingItems, vuln)
+		ids := make([]string, len(items))
+		for i, item := range items {
+			ids[i] = item.NVDId
+		}
+		if err := clearRetirement(ctx, tx, "nvd", "nvd_id", ids); err != nil {
+			return fmt.Errorf("reactivate NVD items: %w", err)
 		}
 	}
 
-	if len(newItems) > 0 {
-		_, err = tx.NewInsert().Model(&newItems).Exec(ctx)
+	if len(rejected) > 0 {
+		// Returning nothing, since skipped rows would shift bun's scan of returned ids onto the wrong items.
+		_, err = tx.NewInsert().Model(&rejected).On("CONFLICT (nvd_id) DO NOTHING").Returning("NULL").Exec(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to batch insert NVD items: %w", err)
+			return fmt.Errorf("failed to insert %d rejected NVD items: %w", len(rejected), err)
+		}
+		if err := retireRejectedNvd(ctx, tx, rejected); err != nil {
+			return err
 		}
 	}
 
-	if len(existingItems) > 0 {
-		_, err = tx.NewUpdate().Model(&existingItems).WherePK().Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to batch update NVD items: %w", err)
-		}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit NVD update: %w", err)
 	}
-
 	return nil
 }
 

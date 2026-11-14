@@ -9,21 +9,12 @@ import (
 )
 
 func UpdateLicenses(db *bun.DB, licenses []knowledge.License) error {
-	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			tx.Rollback()
-			panic(p)
-		} else if err != nil {
-			tx.Rollback()
-		} else {
-			tx.Commit()
-		}
-	}()
+	// A failure rolls back every license written so far.
+	defer tx.Rollback()
 
 	for _, license := range licenses {
 		exists, err := tx.NewSelect().Model(&license).Where("\"licenseId\" = ?", license.LicenseID).Exists(context.Background())
@@ -44,5 +35,5 @@ func UpdateLicenses(db *bun.DB, licenses []knowledge.License) error {
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }

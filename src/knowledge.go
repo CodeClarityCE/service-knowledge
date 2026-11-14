@@ -3,11 +3,14 @@ package knowledge
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"time"
 
+	"github.com/CodeClarityCE/service-knowledge/src/datedrestore"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/cwe"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
@@ -17,7 +20,10 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/php_security"
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	"github.com/CodeClarityCE/service-knowledge/src/validation"
 	dbhelper "github.com/CodeClarityCE/utility-dbhelper/helper"
+	knowledgedb "github.com/CodeClarityCE/utility-types/knowledge_db"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
@@ -132,74 +138,105 @@ func UpdateWithSetup() error {
 	return updateDatabases()
 }
 
+// Update runs every knowledge source, then reports all that failed as a joined error.
 func Update(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
 	// Package-update notifications need the codeclarity database; set it once
 	// here rather than opening an ad-hoc connection per package (see
 	// pgsql.SetCodeClarityDB's doc comment).
 	pgsql.SetCodeClarityDB(codeClarityDB)
 
-	// Update licenses
-	err := licenses.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+	return runSteps(knowledgeDB, updateSteps(knowledgeDB, configDB))
+}
+
+// updateStep is one named step of an update.
+type updateStep struct {
+	name string
+	run  func() error
+}
+
+// updateSteps lists every update step in order. npm follows packages and is not a knowledge source.
+func updateSteps(knowledgeDB *bun.DB, configDB *bun.DB) []updateStep {
+	return []updateStep{
+		{knowledgedb.SourceLicenses, func() error { return licenses.Update(knowledgeDB) }},
+		{knowledgedb.SourceEPSS, func() error { return epss.Update(knowledgeDB) }},
+		{knowledgedb.SourceOSV, func() error { return osv.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceCWE, func() error { return cwe.Update(knowledgeDB) }},
+		{knowledgedb.SourceNVD, func() error { return nvd.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceGCVE, func() error { return gcve.Update(knowledgeDB, configDB) }},
+		{knowledgedb.SourceFriendsOfPHP, func() error { return php_security.Update(knowledgeDB) }},
+		{"npm", func() error { return js.Follow(knowledgeDB, configDB) }},
 	}
+}
 
-	// Update EPSS
-	err = epss.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+// updateSources runs only the named update steps, in update order.
+func updateSources(knowledgeDB *bun.DB, configDB *bun.DB, names ...string) error {
+	steps := slices.DeleteFunc(updateSteps(knowledgeDB, configDB), func(step updateStep) bool {
+		return !slices.Contains(names, step.name)
+	})
+	return runSteps(knowledgeDB, steps)
+}
+
+// runSteps runs every step unless the database is a dated restore.
+func runSteps(knowledgeDB *bun.DB, steps []updateStep) error {
+	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
+		return err
 	}
-
-	// Update vulnerabilities
-	err = osv.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+	runs := make([]func() error, len(steps))
+	for i, step := range steps {
+		runs[i] = step.run
 	}
+	return runAll(runs)
+}
 
-	err = cwe.Update(knowledgeDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+// UpdateAndValidate updates every source, then validates the result, also after a failed update.
+func UpdateAndValidate(knowledgeDB *bun.DB, configDB *bun.DB, codeClarityDB *bun.DB) error {
+	return updateThenValidate(
+		func() error { return Update(knowledgeDB, configDB, codeClarityDB) },
+		func() error { return Validate(knowledgeDB) },
+	)
+}
+
+// updateThenValidate joins the update and validation failures; a refused update is not validated.
+func updateThenValidate(update, validate func() error) error {
+	updateErr := update()
+	if errors.Is(updateErr, datedrestore.ErrDatedRestore) {
+		return updateErr
 	}
+	return errors.Join(updateErr, validate())
+}
 
-	err = nvd.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+// ErrValidationFailed means at least one knowledge source failed validation.
+var ErrValidationFailed = errors.New("knowledge validation failed")
+
+// Validate checks every source and logs and returns any failure.
+func Validate(knowledgeDB *bun.DB) error {
+	if err := datedrestore.RefuseMarked(knowledgeDB); err != nil {
+		return err
 	}
-
-	// Update GCVE/vulnerability-lookup (primary vulnerability source)
-	err = gcve.Update(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+	report, err := validation.Run(knowledgeDB, time.Now())
+	for _, finding := range report.Findings {
+		logger.WithFields(logrus.Fields{"source": finding.Source, "check": finding.Check, "error": finding.Message}).Error("Knowledge source failed validation")
 	}
-
-	// Update PHP security advisories (FriendsOfPHP Security Advisories)
-	err = php_security.Update(knowledgeDB)
 	if err != nil {
-		log.Printf("%v", err)
-		// return err
+		return fmt.Errorf("knowledge validation could not finish: %w", err)
 	}
-
-	// // Import packages
-	// err = js.ImportTop10000(knowledgeDB, configDB)
-	// if err != nil {
-	// 	log.Printf("%v", err)
-	// 	// return err
-	// }
-
-	// Import packages
-	err = js.Follow(knowledgeDB, configDB)
-	if err != nil {
-		log.Printf("%v", err)
-		// return err
+	if report.Failed() {
+		return fmt.Errorf("%w: %d checks failed", ErrValidationFailed, len(report.Findings))
 	}
-
+	logger.Info("Knowledge validation passed")
 	return nil
+}
+
+// runAll runs every step, regardless of earlier failures, and joins their errors.
+func runAll(steps []func() error) error {
+	var failures []error
+	for _, step := range steps {
+		if err := step(); err != nil {
+			logger.WithFields(logrus.Fields{"error": err.Error()}).Error("Knowledge update step failed")
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // updateDatabases handles database setup and calls Update with proper connections
