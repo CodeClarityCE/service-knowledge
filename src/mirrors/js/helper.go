@@ -101,4 +101,3 @@ func downloadWithRetry(pack string, retryCount int) (types.Npm, error) {
 
 	return result, nil
 }
-
