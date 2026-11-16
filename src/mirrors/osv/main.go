@@ -4,7 +4,6 @@ package osv
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -277,25 +277,11 @@ func extractPackageVulnerabilities(osvItems []knowledge.OSVItem, osvIdToUUID map
 // processEcosystem downloads and processes vulnerabilities for a single ecosystem
 // and appends every advisory id it read to snapshotIDs.
 func processEcosystem(db *bun.DB, ecosystem, url string, snapshotIDs *[]string) error {
-	resp, err := http.Get(url)
+	zipReader, closeArchive, err := openArchive(url)
 	if err != nil {
-		return fmt.Errorf("failed to download %s: %w", url, err)
+		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status downloading %s: %s", url, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
-	if err != nil {
-		return fmt.Errorf("failed to read zip archive: %w", err)
-	}
+	defer closeArchive()
 
 	// Process files in batches for better performance
 	const batchSize = 100
@@ -341,6 +327,42 @@ func processEcosystem(db *bun.DB, ecosystem, url string, snapshotIDs *[]string) 
 	}
 
 	return errors.Join(batchFailures...)
+}
+
+// openArchive streams an ecosystem's all.zip to a temporary file and opens it from disk.
+// The returned function closes and removes the file.
+func openArchive(url string) (*zip.Reader, func(), error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("unexpected status downloading %s: %s", url, resp.Status)
+	}
+
+	file, err := os.CreateTemp("", "osv-*.zip")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create temporary archive: %w", err)
+	}
+	cleanup := func() {
+		file.Close()
+		os.Remove(file.Name())
+	}
+
+	size, err := io.Copy(file, resp.Body)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	zipReader, err := zip.NewReader(file, size)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to read zip archive: %w", err)
+	}
+	return zipReader, cleanup, nil
 }
 
 // InsertBatch inserts OSV records and creates package-vulnerability links.
