@@ -120,3 +120,24 @@ func TestArchiveLeavesNoTemporaryFile(t *testing.T) {
 		t.Errorf("temporary files left behind: %v", left)
 	}
 }
+
+func TestRemoveStaleArchives(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	stale := filepath.Join(tmp, "osv-12345.zip")
+	other := filepath.Join(tmp, "keep.zip")
+	for _, path := range []string{stale, other} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removeStaleArchives()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale archive %s was not removed", stale)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("unrelated file was removed: %v", err)
+	}
+}

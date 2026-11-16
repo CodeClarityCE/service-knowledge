@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -91,6 +92,7 @@ func Update(db *bun.DB, db_config *bun.DB) error {
 // time and the number of distinct advisories the archives held.
 func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	log.Println("Start updating OSV vulnerabilities")
+	removeStaleArchives()
 	syncedAt := time.Now()
 	bar := progressbar.Default(int64(len(ImportedEcosystems)))
 
@@ -329,6 +331,19 @@ func processEcosystem(db *bun.DB, ecosystem, url string, snapshotIDs *[]string) 
 	return errors.Join(batchFailures...)
 }
 
+// archivePattern names the temporary archives openArchive writes.
+const archivePattern = "osv-*.zip"
+
+// removeStaleArchives deletes archives left in the temp directory by a crashed run.
+func removeStaleArchives() {
+	stale, _ := filepath.Glob(filepath.Join(os.TempDir(), archivePattern))
+	for _, path := range stale {
+		if err := os.Remove(path); err != nil {
+			log.Printf("failed to remove stale archive %s: %v", path, err)
+		}
+	}
+}
+
 // openArchive streams an ecosystem's all.zip to a temporary file and opens it from disk.
 // The returned function closes and removes the file.
 func openArchive(url string) (*zip.Reader, func(), error) {
@@ -342,7 +357,7 @@ func openArchive(url string) (*zip.Reader, func(), error) {
 		return nil, nil, fmt.Errorf("unexpected status downloading %s: %s", url, resp.Status)
 	}
 
-	file, err := os.CreateTemp("", "osv-*.zip")
+	file, err := os.CreateTemp("", archivePattern)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create temporary archive: %w", err)
 	}
