@@ -128,6 +128,9 @@ func ConvertNpmVersion(npm Npm) []knowledge.Version {
 			"Deprecated":           npm.Versions[key].Deprecated,
 			"Time":                 npm.Time[key],
 		}
+		if expr := NpmLicenseExpression(npm.Versions[key].License, npm.Versions[key].Licenses); expr != "" {
+			version.Extra[VersionLicenseKey] = expr
+		}
 		versions = append(versions, version)
 	}
 	return versions
