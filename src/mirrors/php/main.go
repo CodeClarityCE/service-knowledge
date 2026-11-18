@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/utilities/pgsql"
+	"github.com/CodeClarityCE/service-knowledge/src/utilities/types"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
@@ -471,19 +472,7 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	pack.Versions = make([]knowledge.Version, 0, len(packagist.Package.Versions))
 	for version, info := range packagist.Package.Versions {
 		// Convert flexible fields to consistent format
-		var licenses []string
-		switch lic := info.License.(type) {
-		case string:
-			licenses = []string{lic}
-		case []any:
-			for _, l := range lic {
-				if str, ok := l.(string); ok {
-					licenses = append(licenses, str)
-				}
-			}
-		case []string:
-			licenses = lic
-		}
+		licenses := composerLicenses(info.License)
 
 		v := knowledge.Version{
 			Version: version,
@@ -503,6 +492,9 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 				"replace":  NormalizeDependencies(info.Replace),
 				"conflict": NormalizeDependencies(info.Conflict),
 			},
+		}
+		if expr := types.AnyOfLicenses(licenses); expr != "" {
+			v.Extra[types.VersionLicenseKey] = expr
 		}
 
 		// Convert dependencies - normalize to handle flexible types
@@ -530,23 +522,11 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	if len(pack.Versions) > 0 {
 		for _, info := range packagist.Package.Versions {
 			if info.Version == latestVersion {
-				// Handle flexible license type
-				var licenses []string
-				switch lic := info.License.(type) {
-				case string:
-					licenses = []string{lic}
-				case []any:
-					for _, l := range lic {
-						if str, ok := l.(string); ok {
-							licenses = append(licenses, str)
-						}
-					}
-				case []string:
-					licenses = lic
-				}
+				licenses := composerLicenses(info.License)
 
 				if len(licenses) > 0 {
-					pack.License = strings.Join(licenses, ", ")
+					pack.License = types.AnyOfLicenses(licenses)
+					types.WarnLongPackageLicense(pack.Name, pack.Language, pack.License)
 					pack.Licenses = make([]knowledge.LicenseNpm, len(licenses))
 					for i, lic := range licenses {
 						pack.Licenses[i] = knowledge.LicenseNpm{
@@ -561,6 +541,25 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 	}
 
 	return pack
+}
+
+// composerLicenses reads a Composer license field given as a string or a list.
+func composerLicenses(license any) []string {
+	switch lic := license.(type) {
+	case string:
+		return []string{lic}
+	case []any:
+		var licenses []string
+		for _, l := range lic {
+			if str, ok := l.(string); ok {
+				licenses = append(licenses, str)
+			}
+		}
+		return licenses
+	case []string:
+		return lic
+	}
+	return nil
 }
 
 // getDefaultTopPackages returns a list of popular PHP packages

@@ -3,18 +3,18 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.27.4
 
 require (
-	github.com/CodeClarityCE/utility-amqp-helper v0.0.16-alpha
-	github.com/CodeClarityCE/utility-boilerplates v0.0.12-alpha
-	github.com/CodeClarityCE/utility-dbhelper v0.0.19-alpha
+	github.com/CodeClarityCE/utility-amqp-helper v0.0.17-alpha
+	github.com/CodeClarityCE/utility-boilerplates v0.0.13-alpha
+	github.com/CodeClarityCE/utility-dbhelper v0.0.20-alpha
 	github.com/CodeClarityCE/utility-node-semver v0.0.12-alpha
-	github.com/CodeClarityCE/utility-types v0.0.23-alpha
+	github.com/CodeClarityCE/utility-types v0.0.24-alpha
 	github.com/google/uuid v1.6.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.19.1
 	github.com/sirupsen/logrus v1.10.2
-	github.com/uptrace/bun v1.2.18
-	github.com/uptrace/bun/dialect/pgdialect v1.2.18
-	github.com/uptrace/bun/driver/pgdriver v1.2.18
+	github.com/uptrace/bun v1.3.0
+	github.com/uptrace/bun/dialect/pgdialect v1.3.0
+	github.com/uptrace/bun/driver/pgdriver v1.3.0
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
@@ -25,12 +25,12 @@ require (
 	github.com/lib/pq v1.12.3 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_golang v1.24.1 // indirect
+	github.com/prometheus/client_golang v1.25.0 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
-	github.com/prometheus/common v0.71.0 // indirect
+	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/rabbitmq/amqp091-go v1.15.0 // indirect
+	github.com/rabbitmq/amqp091-go v1.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
