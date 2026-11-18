@@ -7,6 +7,10 @@ import knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 func addCodeClarityInfo(licenses []knowledge.License) []knowledge.License {
 
 	for license := range licenses {
+		// Family first, so the hand-written entries below keep the last word.
+		if family := licenseFamily(licenses[license].LicenseID); family != "" {
+			licenses[license].Details.Classification = family
+		}
 		switch licenses[license].LicenseID {
 		case "BSD-1-Clause":
 			licenses[license].Details.Classification = "permissive"
