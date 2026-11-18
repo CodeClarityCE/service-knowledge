@@ -124,7 +124,7 @@ func countNvd(t *testing.T, db *bun.DB) int {
 	if err != nil {
 		t.Fatalf("count nvd: %v", err)
 	}
-	return count
+	return int(count)
 }
 
 func TestUpdateNvdPageMixingNewAndExistingCves(t *testing.T) {

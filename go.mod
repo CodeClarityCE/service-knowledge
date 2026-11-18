@@ -12,9 +12,9 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.19.1
 	github.com/sirupsen/logrus v1.10.2
-	github.com/uptrace/bun v1.2.18
-	github.com/uptrace/bun/dialect/pgdialect v1.2.18
-	github.com/uptrace/bun/driver/pgdriver v1.2.18
+	github.com/uptrace/bun v1.3.0
+	github.com/uptrace/bun/dialect/pgdialect v1.3.0
+	github.com/uptrace/bun/driver/pgdriver v1.3.0
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
