@@ -1,6 +1,6 @@
 {
     "name": "knowledge",
-    "version": "v0.0.29-alpha",
+    "version": "v0.0.30-alpha",
     "image_name": "codeclarityce/service-knowledge",
     "depends_on": []
 }
