@@ -526,6 +526,7 @@ func convertPackagistToKnowledge(packagist *PackagistPackage) knowledge.Package 
 
 				if len(licenses) > 0 {
 					pack.License = types.AnyOfLicenses(licenses)
+					types.WarnLongPackageLicense(pack.Name, pack.Language, pack.License)
 					pack.Licenses = make([]knowledge.LicenseNpm, len(licenses))
 					for i, lic := range licenses {
 						pack.Licenses[i] = knowledge.LicenseNpm{

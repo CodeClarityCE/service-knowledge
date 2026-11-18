@@ -1,6 +1,10 @@
 package types
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sirupsen/logrus"
+)
 
 // VersionLicenseKey is the version extra key that holds the version's SPDX license expression.
 const VersionLicenseKey = "license_expression"
@@ -61,4 +65,20 @@ func npmLicenseName(license any) string {
 		return strings.TrimSpace(l.Type)
 	}
 	return ""
+}
+
+// LegacyPackageLicenseLength is the package.license limit before the API's WidenPackageLicense migration.
+const LegacyPackageLicenseLength = 50
+
+// WarnLongPackageLicense logs a package license that a knowledge database without that migration would reject.
+// The value is kept whole, since cutting an expression would change its meaning.
+func WarnLongPackageLicense(name, language, license string) {
+	if len(license) <= LegacyPackageLicenseLength {
+		return
+	}
+	logrus.WithFields(logrus.Fields{
+		"package":  name,
+		"language": language,
+		"length":   len(license),
+	}).Warn("Package license is longer than 50 characters; the knowledge database needs the WidenPackageLicense migration to store it")
 }

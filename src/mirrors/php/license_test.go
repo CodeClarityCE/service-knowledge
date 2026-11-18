@@ -1,6 +1,11 @@
 package php
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
+)
 
 func TestComposerLicenseListBecomesAnOrExpression(t *testing.T) {
 	pack := convertPackagistToKnowledge(&PackagistPackage{Package: PackagistPackageDetails{
@@ -27,5 +32,27 @@ func TestComposerLicenseListBecomesAnOrExpression(t *testing.T) {
 	}
 	if pack.License != "MIT OR GPL-2.0-or-later" {
 		t.Errorf("package license = %q, want MIT OR GPL-2.0-or-later", pack.License)
+	}
+}
+
+func TestLongComposerLicenseIsKeptWhole(t *testing.T) {
+	hook := logtest.NewGlobal()
+	defer hook.Reset()
+	licenses := []any{"MIT", "GPL-2.0-or-later", "LGPL-2.1-or-later", "Apache-2.0", "BSD-3-Clause"}
+	want := "MIT OR GPL-2.0-or-later OR LGPL-2.1-or-later OR Apache-2.0 OR BSD-3-Clause"
+
+	pack := convertPackagistToKnowledge(&PackagistPackage{Package: PackagistPackageDetails{
+		Name: "acme/many",
+		Versions: map[string]PackagistVersionInfo{
+			"1.0.0": {Version: "1.0.0", Time: "2020-01-01T00:00:00+00:00", License: licenses},
+		},
+	}})
+
+	if pack.License != want {
+		t.Errorf("package license = %q, want %q", pack.License, want)
+	}
+	entry := hook.LastEntry()
+	if entry == nil || entry.Level != logrus.WarnLevel || entry.Data["package"] != "acme/many" {
+		t.Errorf("want a warning naming acme/many, got %+v", entry)
 	}
 }
