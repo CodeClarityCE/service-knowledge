@@ -37,11 +37,8 @@ func CreatePackageInfoNpm(result types.Npm) knowledge.Package {
 		}
 	}
 
-	if license, ok := result.License.(knowledge.LicenseNpm); ok {
-		pack.License = license.Type
-	} else if license, ok := result.License.(string); ok {
-		pack.License = license
-	}
+	pack.License = types.NpmLicenseExpression(result.License, result.Licenses)
+	types.WarnLongPackageLicense(pack.Name, pack.Language, pack.License)
 
 	if keywords, ok := result.Repository.([]string); ok {
 		pack.Keywords = keywords
