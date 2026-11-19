@@ -113,10 +113,10 @@ func GetAllFriendsOfPHP(db *bun.DB, limit, offset int) ([]knowledge.FriendsOfPHP
 	query := db.NewSelect().Model(&advisories)
 
 	if limit > 0 {
-		query = query.Limit(int64(limit))
+		query = query.Limit(limit)
 	}
 	if offset > 0 {
-		query = query.Offset(int64(offset))
+		query = query.Offset(offset)
 	}
 
 	err := query.Scan(ctx)
