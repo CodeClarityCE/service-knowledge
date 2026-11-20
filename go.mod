@@ -3,9 +3,9 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.27.4
 
 require (
-	github.com/CodeClarityCE/utility-amqp-helper v0.0.19-alpha
-	github.com/CodeClarityCE/utility-boilerplates v0.0.15-alpha
-	github.com/CodeClarityCE/utility-dbhelper v0.0.22-alpha
+	github.com/CodeClarityCE/utility-amqp-helper v0.0.20-alpha
+	github.com/CodeClarityCE/utility-boilerplates v0.0.16-alpha
+	github.com/CodeClarityCE/utility-dbhelper v0.0.23-alpha
 	github.com/CodeClarityCE/utility-node-semver v0.0.12-alpha
 	github.com/CodeClarityCE/utility-types v0.0.26-alpha
 	github.com/google/uuid v1.6.0
