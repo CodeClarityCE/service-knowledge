@@ -2,7 +2,7 @@ package knowledge
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
-	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 	knowledgedb "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
@@ -34,22 +33,23 @@ var fullGCVEDump = strings.Join([]string{
 		gcveRejectedAt.Format("2006-01-02T15:04:05.000Z")),
 }, "\n") + "\n"
 
-// Vulnrichment enriches records the dump already holds.
-var fullGCVEEnrichment = gcvePublished("CVE-2026-1000") + "\n"
-
-// serveGCVE starts a fake vulnerability-lookup with the given dump and enrichment, and an empty update window.
-func serveGCVE(t *testing.T, dump, enrichment string) {
+// serveGCVE starts a fake vulnerability-lookup serving only the bulk dump and an empty update window.
+// A request to any other endpoint fails the test.
+func serveGCVE(t *testing.T, dump string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bulk", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		fmt.Fprint(w, dump)
 	})
-	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, enrichment) })
 	mux.HandleFunc("/window", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "[]") })
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected GCVE request to %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	t.Cleanup(gcve.UseUpstream(server.URL+"/bulk", server.URL+"/rich", server.URL+"/window"))
+	t.Cleanup(gcve.UseUpstream(server.URL+"/bulk", server.URL+"/window"))
 }
 
 // createGCVETables creates gcve and, unless another source already did, the package link table.
@@ -75,10 +75,10 @@ func init() {
 		createTables: createGCVETables,
 		serve: func(t *testing.T, empty bool) {
 			if empty {
-				serveGCVE(t, "", fullGCVEEnrichment)
+				serveGCVE(t, "")
 				return
 			}
-			serveGCVE(t, fullGCVEDump, fullGCVEEnrichment)
+			serveGCVE(t, fullGCVEDump)
 		},
 		upstreamTotal: 4,
 		breaks:        upstreamTotalBreaks(knowledgedb.SourceGCVE),
@@ -87,7 +87,7 @@ func init() {
 
 func TestGCVERejectedRecordsAreStoredRetiredWithoutLinks(t *testing.T) {
 	b := newBuild(t)
-	serveGCVE(t, fullGCVEDump, fullGCVEEnrichment)
+	serveGCVE(t, fullGCVEDump)
 
 	if err := updateSources(b.knowledge, b.config, knowledgedb.SourceGCVE); err != nil {
 		t.Fatal(err)
@@ -117,17 +117,66 @@ func TestGCVERejectedRecordsAreStoredRetiredWithoutLinks(t *testing.T) {
 	}
 }
 
-func TestGCVEWithAnEmptyVulnrichmentFails(t *testing.T) {
+func TestGCVEBuildsFromEmptyWithOnlyTheBulkDumpAndWindow(t *testing.T) {
 	b := newBuild(t)
-	serveGCVE(t, fullGCVEDump, "")
+	serveGCVE(t, fullGCVEDump)
+	before := time.Now().Truncate(time.Second)
 
-	err := updateSources(b.knowledge, b.config, knowledgedb.SourceGCVE)
-
-	if !errors.Is(err, sourcesync.ErrNoUpstreamRecords) {
-		t.Errorf("update = %v, want ErrNoUpstreamRecords", err)
+	if err := updateSources(b.knowledge, b.config, knowledgedb.SourceGCVE); err != nil {
+		t.Fatal(err)
 	}
-	testhelper.AssertFailed(t, b.knowledge, knowledgedb.SourceGCVE)
-	if got := testhelper.UpstreamTotal(t, b.knowledge, knowledgedb.SourceGCVE); got != nil {
-		t.Errorf("upstream_total = %d, want none", *got)
+
+	testhelper.AssertSucceededAfter(t, b.knowledge, knowledgedb.SourceGCVE, before)
+	if got := testhelper.UpstreamTotal(t, b.knowledge, knowledgedb.SourceGCVE); got == nil || *got != 4 {
+		t.Errorf("upstream_total = %v, want the 4 dump records", got)
+	}
+}
+
+// gcveWithCISAADP is a published record whose CISA-ADP container adds SSVC decision points and an affected product.
+const gcveWithCISAADP = `{"cveMetadata":{"cveId":"CVE-2026-2000","state":"PUBLISHED","dateUpdated":"2026-01-01T00:00:00.000Z"},` +
+	`"containers":{"cna":{"affected":[{"vendor":"acme","product":"widget"}]},` +
+	`"adp":[{"providerMetadata":{"orgId":"134c704f-9b21-4f2e-91b3-4a467353bcc0","shortName":"CISA-ADP"},` +
+	`"title":"CISA ADP Vulnrichment",` +
+	`"affected":[{"vendor":"acme","product":"gadget"}],` +
+	`"metrics":[{"other":{"type":"ssvc","content":{"id":"CVE-2026-2000","role":"CISA Coordinator","version":"2.0.3",` +
+	`"timestamp":"2026-01-02T00:00:00Z","options":[{"Exploitation":"none"},{"Automatable":"no"},{"Technical Impact":"partial"}]}}}]}]}}`
+
+func TestGCVEBulkRecordKeepsItsCISAADPEnrichment(t *testing.T) {
+	b := newBuild(t)
+	serveGCVE(t, fullGCVEDump+gcveWithCISAADP+"\n")
+
+	if err := updateSources(b.knowledge, b.config, knowledgedb.SourceGCVE); err != nil {
+		t.Fatal(err)
+	}
+
+	var item knowledgedb.GCVEItem
+	if err := b.knowledge.NewSelect().Model(&item).Where("gcve_id = ?", "GCVE-0-2026-2000").Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(item.ADPEnrichments) != 1 {
+		t.Fatalf("ADP enrichments = %+v, want the CISA-ADP one", item.ADPEnrichments)
+	}
+	adp := item.ADPEnrichments[0]
+	if adp.ShortName != "CISA-ADP" || adp.Title != "CISA ADP Vulnrichment" {
+		t.Errorf("ADP enrichment = %q %q, want CISA-ADP", adp.ShortName, adp.Title)
+	}
+	if len(adp.Metrics) != 1 || adp.Metrics[0].Other == nil || adp.Metrics[0].Other.Type != "ssvc" {
+		t.Fatalf("ADP metrics = %+v, want the SSVC metric", adp.Metrics)
+	}
+	var ssvc struct {
+		Options []map[string]string `json:"options"`
+	}
+	if err := json.Unmarshal(adp.Metrics[0].Other.Content, &ssvc); err != nil {
+		t.Fatal(err)
+	}
+	if len(ssvc.Options) != 3 || ssvc.Options[0]["Exploitation"] != "none" || ssvc.Options[2]["Technical Impact"] != "partial" {
+		t.Errorf("SSVC options = %v, want the three decision points", ssvc.Options)
+	}
+	var links int
+	if err := b.knowledge.NewRaw("SELECT count(*) FROM package_vulnerability WHERE gcve_id = ? AND package_name = 'gadget'", item.Id).Scan(context.Background(), &links); err != nil {
+		t.Fatal(err)
+	}
+	if links != 1 {
+		t.Errorf("package links for the ADP-added product = %d, want 1", links)
 	}
 }

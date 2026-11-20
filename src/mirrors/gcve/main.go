@@ -31,7 +31,6 @@ var logger = logrus.StandardLogger()
 // Upstream endpoints, replaceable in tests.
 var (
 	bulkDumpURL      = "https://vulnerability.circl.lu/dumps/cvelistv5.ndjson"
-	vulnrichmentURL  = "https://vulnerability.circl.lu/dumps/vulnrichment.ndjson"
 	vulnerabilityAPI = "https://vulnerability.circl.lu/api/vulnerability/"
 )
 
@@ -85,8 +84,8 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 
 	switch {
 	case !bulkTime.IsZero():
-		logger.WithFields(logrus.Fields{"source": knowledge.SourceGCVE, "bulk_completed_at": bulkTime.UTC().Format(time.RFC3339)}).Info("GCVE bulk import already done, retrying enrichment and reconcile")
-		total, err = retryAfterBulk(db, bulkTime, syncedAt)
+		logger.WithFields(logrus.Fields{"source": knowledge.SourceGCVE, "bulk_completed_at": bulkTime.UTC().Format(time.RFC3339)}).Info("GCVE bulk import already done, resuming catch-up and reconcile")
+		total, err = resumeAfterBulk(db, bulkTime, syncedAt)
 	case last.IsZero():
 		log.Println("No previous GCVE sync, performing full bulk import")
 		total, err = fullImport(db, syncedAt)
@@ -110,37 +109,26 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	return sourcesync.Result{Watermark: syncedAt, UpstreamTotal: total}, nil
 }
 
-// fullImport loads the dump, enriches it, catches up from the dump's date and reconciles.
-// It records the bulk import as done first, so a later run only has to retry the enrichment.
+// fullImport loads the dump, catches up from the dump's date and reconciles.
+// It records the bulk import as done first, so a later run can resume from catch-up.
 func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
-	dumpTime, ids, err := bulkImport(db, time.Time{})
+	dumpTime, dumped, err := bulkImport(db, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("bulk import: %w", err)
 	}
 	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, dumpTime); err != nil {
 		return nil, err
 	}
-	enriched, err := importVulnrichment(db)
-	if err != nil {
-		return nil, fmt.Errorf("vulnrichment import: %w", err)
-	}
 	caughtUp, err := catchUp(db, dumpTime)
 	if err != nil {
 		return nil, err
 	}
-
-	snapshot := make([]string, 0, len(ids)+len(enriched)+len(caughtUp))
-	snapshot = append(append(append(snapshot, ids...), enriched...), caughtUp...)
-	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+	return reconcile(db, dumped, caughtUp, syncedAt)
 }
 
-// retryAfterBulk finishes a full import whose enrichment failed, enriching first because that is what failed.
+// resumeAfterBulk finishes a full import whose catch-up or reconcile failed, without importing the dump again.
 // It reads the dump again without storing it, to get the ids the reconcile needs.
-func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
-	enriched, err := importVulnrichment(db)
-	if err != nil {
-		return nil, fmt.Errorf("vulnrichment import: %w", err)
-	}
+func resumeAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
 	caughtUp, err := catchUp(db, dumpTime)
 	if err != nil {
 		return nil, err
@@ -149,20 +137,26 @@ func retryAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read dump for reconcile: %w", err)
 	}
+	return reconcile(db, dumped, caughtUp, syncedAt)
+}
 
-	snapshot := make([]string, 0, len(dumped)+len(enriched)+len(caughtUp))
-	snapshot = append(append(append(snapshot, dumped...), enriched...), caughtUp...)
-	return sourcesync.DistinctTotal(snapshot), pgsql.ReconcileGcve(db, snapshot, syncedAt)
+// reconcile retires records absent from both the dump and the catch-up, and returns the upstream total.
+func reconcile(db *bun.DB, dumped, caughtUp []string, syncedAt time.Time) (*int64, error) {
+	snapshot := append(append(make([]string, 0, len(dumped)+len(caughtUp)), dumped...), caughtUp...)
+	if err := pgsql.ReconcileGcve(db, snapshot, syncedAt); err != nil {
+		return nil, fmt.Errorf("reconcile: %w", err)
+	}
+	return sourcesync.DistinctTotal(snapshot), nil
 }
 
 // catchUp applies the changes made since the dump was built.
 func catchUp(db *bun.DB, dumpTime time.Time) ([]string, error) {
 	records, err := fetchWindow(dumpTime.Add(-windowOverlap))
 	if err != nil {
-		return nil, fmt.Errorf("catch up from dump: %w", err)
+		return nil, fmt.Errorf("catch-up: %w", err)
 	}
 	if err := storeRecentRecords(db, records); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("catch-up: %w", err)
 	}
 	return recordGcveIds(records), nil
 }
@@ -277,30 +271,6 @@ func newRecordScanner(reader io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
 	return scanner
-}
-
-// importVulnrichment downloads and merges CISA ADP enrichment data.
-func importVulnrichment(db *bun.DB) ([]string, error) {
-	log.Println("Downloading vulnrichment dump...")
-
-	resp, err := httpClient.Get(vulnrichmentURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download vulnrichment dump: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	ids, err := processNDJSONStream(db, resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("vulnrichment dump: %w", sourcesync.ErrNoUpstreamRecords)
-	}
-	return ids, nil
 }
 
 // processNDJSONStream reads an NDJSON stream line by line and processes in batches.
@@ -843,12 +813,11 @@ func storeRecentRecords(db *bun.DB, records []json.RawMessage) error {
 	return errors.Join(failures...)
 }
 
-// UseUpstream points the mirror at other dump, enrichment and update window URLs, without
+// UseUpstream points the mirror at other bulk dump and update window URLs, without
 // pausing between window requests, and returns a function that undoes it.
-func UseUpstream(bulk, enrichment, window string) (restore func()) {
+func UseUpstream(bulk, window string) (restore func()) {
 	return override.All(
 		override.Set(&bulkDumpURL, bulk),
-		override.Set(&vulnrichmentURL, enrichment),
 		override.Set(&vulnerabilityAPI, window),
 		override.Set(&windowRequestInterval, 0),
 	)

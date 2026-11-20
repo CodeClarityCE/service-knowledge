@@ -33,7 +33,7 @@ func setup(t *testing.T, watermark bool) *bun.DB {
 	return db
 }
 
-// serve answers the incremental API with records and both dumps with dump.
+// serve answers the update window with records and the bulk dump with dump.
 // It returns a count of the bulk dump downloads.
 func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 	t.Helper()
@@ -46,12 +46,10 @@ func serve(t *testing.T, records, dump string, status int) *atomic.Int32 {
 		w.WriteHeader(status)
 		fmt.Fprint(w, dump)
 	})
-	// Vulnrichment enriches records the dump already holds.
-	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, dump) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	t.Cleanup(UseUpstream(server.URL+"/bulk", server.URL+"/rich", server.URL+"/last"))
+	t.Cleanup(UseUpstream(server.URL+"/bulk", server.URL+"/last"))
 	return bulkDownloads
 }
 
@@ -173,33 +171,18 @@ func TestUnreadableIncrementalResponseFallsBackToBulkDump(t *testing.T) {
 	}
 }
 
-func TestVulnrichmentFailureFailsSourceWithoutSecondBulkDownload(t *testing.T) {
-	db := setup(t, false)
-	bulkDownloads := serve(t, "[]", record, http.StatusOK)
-	vulnrichmentURL = vulnerabilityAPI + "/missing"
+const otherRecord = `{"cveMetadata":{"cveId":"CVE-2026-0003","state":"PUBLISHED"},"containers":{"cna":{"affected":[{"vendor":"v","product":"q"}]}}}`
 
-	if err := Update(db, db); err == nil {
-		t.Fatal("a failed vulnrichment import should fail the source")
-	}
-	if !testhelper.ConfigTimeIsNull(t, db, "gcve_last") {
-		t.Error("gcve_last should stay unset")
-	}
-	if got := bulkDownloads.Load(); got != 1 {
-		t.Errorf("bulk downloads = %d, want 1", got)
-	}
-}
-
-const enrichedRecord = `{"cveMetadata":{"cveId":"CVE-2026-0003","state":"PUBLISHED"},"containers":{"cna":{"affected":[{"vendor":"v","product":"q"}]}}}`
-
-// serveEnrichment points the enrichment dump at a server answering with status and body.
-func serveEnrichment(t *testing.T, status int, body string) {
+// breakWindow points the update window at a server answering 502 until the returned function is called.
+func breakWindow(t *testing.T) (repair func()) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(status)
-		fmt.Fprint(w, body)
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	t.Cleanup(server.Close)
-	vulnrichmentURL = server.URL
+	working := vulnerabilityAPI
+	vulnerabilityAPI = server.URL
+	return func() { vulnerabilityAPI = working }
 }
 
 func bulkCompletedAt(t *testing.T, db *bun.DB) time.Time {
@@ -220,64 +203,13 @@ func watermark(t *testing.T, db *bun.DB) time.Time {
 	return value
 }
 
-func TestEnrichmentRetryReadsTheDumpAgainAndAdvancesFromRunStart(t *testing.T) {
-	db := setup(t, false)
-	bulkDownloads := serve(t, "[]", record, http.StatusOK)
-	serveEnrichment(t, http.StatusBadGateway, "")
-
-	before := time.Now().Truncate(time.Second)
-	if err := Update(db, db); err == nil {
-		t.Fatal("a failed enrichment should fail the source")
-	}
-	afterFirstRun := time.Now()
-
-	completedAt := bulkCompletedAt(t, db)
-	if completedAt.Before(before) || completedAt.After(afterFirstRun) {
-		t.Fatalf("bulk_completed_at = %v, want a time during the first run", completedAt)
-	}
-	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
-	if got := watermark(t, db); !got.IsZero() {
-		t.Fatalf("watermark = %v, want none until enrichment succeeds", got)
-	}
-
-	serveEnrichment(t, http.StatusOK, enrichedRecord)
-	retryStart := time.Now().Truncate(time.Second)
-	if err := Update(db, db); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := bulkDownloads.Load(); got != 2 {
-		t.Errorf("bulk downloads = %d, want a second read of the dump for the reconcile", got)
-	}
-	var rows int
-	if err := db.NewSelect().Table("gcve").ColumnExpr("count(*)").Scan(context.Background(), &rows); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 2 {
-		t.Errorf("rows = %d, want the bulk and the enrichment record", rows)
-	}
-	if got := watermark(t, db); got.Before(retryStart) {
-		t.Errorf("watermark = %v, want the retry's start %v", got, retryStart)
-	}
-	if got := testhelper.ConfigTime(t, db, "gcve_last"); got.Before(retryStart) {
-		t.Errorf("gcve_last = %v, want the retry's start %v", got, retryStart)
-	}
-	if got := bulkCompletedAt(t, db); !got.IsZero() {
-		t.Errorf("bulk_completed_at = %v, want it cleared", got)
-	}
-	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 2 {
-		t.Errorf("upstream_total = %v, want the dump and enrichment records", got)
-	}
-	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
-}
-
 func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
 	db := setup(t, false)
 	serve(t, "[]", record, http.StatusOK)
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
-	serve(t, "["+enrichedRecord+"]", record, http.StatusOK)
+	serve(t, "["+otherRecord+"]", record, http.StatusOK)
 
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
@@ -288,15 +220,15 @@ func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
 	}
 }
 
-func TestRepeatedEnrichmentFailureKeepsSourceFailedAndBulkTime(t *testing.T) {
+func TestRepeatedCatchUpFailureKeepsSourceFailedAndBulkTime(t *testing.T) {
 	stale := time.Now().Add(-40 * 24 * time.Hour).Truncate(time.Second)
 	db := setup(t, false)
 	testhelper.SeedWatermark(t, db, knowledge.SourceGCVE, stale)
 	bulkDownloads := serve(t, "[]", record, http.StatusOK)
-	serveEnrichment(t, http.StatusBadGateway, "")
+	breakWindow(t)
 
 	if err := Update(db, db); err == nil {
-		t.Fatal("a failed enrichment should fail the source")
+		t.Fatal("a failed catch-up should fail the source")
 	}
 	completedAt := bulkCompletedAt(t, db)
 	if completedAt.IsZero() {
@@ -304,7 +236,7 @@ func TestRepeatedEnrichmentFailureKeepsSourceFailedAndBulkTime(t *testing.T) {
 	}
 
 	if err := Update(db, db); err == nil {
-		t.Fatal("a repeated enrichment failure should fail the source")
+		t.Fatal("a repeated catch-up failure should fail the source")
 	}
 
 	testhelper.AssertFailedWithWatermark(t, db, knowledge.SourceGCVE, stale)
