@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,20 +149,75 @@ func TestLargeRemovalFailsWithoutRetiring(t *testing.T) {
 	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
 }
 
-func TestEnrichmentRetryRetiresRecordsAbsentFromTheDump(t *testing.T) {
+func TestCatchUpFailureAfterBulkResumesWithoutReimporting(t *testing.T) {
+	db := setup(t, false)
+	dumpTime := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	upstream := &fakeUpstream{
+		dump:     dated("CVE-2026-1", dumpTime.Add(-time.Hour)) + "\n",
+		dumpTime: dumpTime,
+		records:  map[string]time.Time{"CVE-2026-LATE": time.Now().Add(-time.Hour)},
+	}
+	upstream.windowDown.Store(true)
+	upstream.serve(t)
+
+	err := Update(db, db)
+	if err == nil || !strings.Contains(err.Error(), "catch-up") {
+		t.Fatalf("update = %v, want a catch-up failure", err)
+	}
+	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
+	if got := bulkCompletedAt(t, db); !got.Equal(dumpTime) {
+		t.Fatalf("bulk_completed_at = %v, want the dump's date %v", got, dumpTime)
+	}
+	if got := watermark(t, db); !got.IsZero() {
+		t.Fatalf("watermark = %v, want none until catch-up and reconcile succeed", got)
+	}
+
+	// A record only the resume's re-read sees shows that the re-read stores nothing.
+	upstream.dump += dated("CVE-2026-REREAD", dumpTime.Add(-time.Hour)) + "\n"
+	upstream.windowDown.Store(false)
+	resumeStart := time.Now().Truncate(time.Second)
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := upstream.bulkRequests.Load(); got != 2 {
+		t.Errorf("bulk requests = %d, want the import and one re-read for the reconcile", got)
+	}
+	if got := gcveRows(t, db); got != 2 {
+		t.Errorf("rows = %d, want the bulk record and the caught-up record", got)
+	}
+	if got := retiredAs(t, db, "GCVE-0-2026-LATE"); got != "" {
+		t.Errorf("caught-up record retired: %q", got)
+	}
+	if got := bulkCompletedAt(t, db); !got.IsZero() {
+		t.Errorf("bulk_completed_at = %v, want it cleared", got)
+	}
+	if got := watermark(t, db); got.Before(resumeStart) {
+		t.Errorf("watermark = %v, want the resume's start %v", got, resumeStart)
+	}
+	if got := testhelper.ConfigTime(t, db, "gcve_last"); got.Before(resumeStart) {
+		t.Errorf("gcve_last = %v, want the resume's start %v", got, resumeStart)
+	}
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 3 {
+		t.Errorf("upstream_total = %v, want the 2 re-read dump records and the caught-up one", got)
+	}
+	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
+}
+
+func TestResumeRetiresRecordsAbsentFromTheDump(t *testing.T) {
 	db := setup(t, false)
 	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
 	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
+	upstream.windowDown.Store(true)
 	upstream.serve(t)
-	serveEnrichment(t, http.StatusBadGateway, "")
 	if err := Update(db, db); err == nil {
-		t.Fatal("a failed enrichment should fail the source")
+		t.Fatal("a failed catch-up should fail the source")
 	}
 	if got := retiredAs(t, db, "GCVE-0-GONE"); got != "" {
 		t.Fatalf("record retired before the import finished: %q", got)
 	}
 
-	serveEnrichment(t, http.StatusOK, enrichedRecord)
+	upstream.windowDown.Store(false)
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
@@ -174,27 +230,31 @@ func TestEnrichmentRetryRetiresRecordsAbsentFromTheDump(t *testing.T) {
 	}
 }
 
-func TestEnrichmentRetryStaysFailedWhenTheDumpCannotBeRead(t *testing.T) {
+func TestResumeStaysFailedWhenTheDumpCannotBeRead(t *testing.T) {
 	db := setup(t, false)
 	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
 	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
+	upstream.windowDown.Store(true)
 	upstream.serve(t)
-	serveEnrichment(t, http.StatusBadGateway, "")
 	if err := Update(db, db); err == nil {
-		t.Fatal("a failed enrichment should fail the source")
+		t.Fatal("a failed catch-up should fail the source")
 	}
+	completedAt := bulkCompletedAt(t, db)
 
-	serveEnrichment(t, http.StatusOK, enrichedRecord)
+	upstream.windowDown.Store(false)
 	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	t.Cleanup(unavailable.Close)
 	bulkDumpURL = unavailable.URL
 	if err := Update(db, db); err == nil {
-		t.Fatal("a retry that cannot reconcile should fail the source")
+		t.Fatal("a resume that cannot reconcile should fail the source")
 	}
 
 	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
+	if got := bulkCompletedAt(t, db); completedAt.IsZero() || !got.Equal(completedAt) {
+		t.Errorf("bulk_completed_at = %v, want it kept at %v", got, completedAt)
+	}
 	if got := watermark(t, db); !got.IsZero() {
 		t.Errorf("watermark = %v, want none until the reconcile has happened", got)
 	}
