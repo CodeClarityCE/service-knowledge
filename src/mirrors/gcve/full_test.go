@@ -1,6 +1,7 @@
 package gcve
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -139,8 +140,9 @@ func TestLargeRemovalFailsWithoutRetiring(t *testing.T) {
 	upstream := &fakeUpstream{dump: dated("CVE-2026-0", time.Now()) + "\n", dumpTime: time.Now()}
 	upstream.serve(t)
 
-	if err := Update(db, db); err == nil {
-		t.Fatal("an implausible removal should fail the source")
+	err := Update(db, db)
+	if err == nil || !strings.HasPrefix(err.Error(), "gcve: reconcile: ") {
+		t.Fatalf("update = %v, want a failure naming the reconcile", err)
 	}
 
 	if got := retiredAs(t, db, "GCVE-0-2026-5"); got != "" {
@@ -204,7 +206,10 @@ func TestCatchUpFailureAfterBulkResumesWithoutReimporting(t *testing.T) {
 	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
 }
 
-func TestResumeRetiresRecordsAbsentFromTheDump(t *testing.T) {
+// failCatchUpOnce runs a full import of a one-record dump whose catch-up fails, over stored
+// CVE-2026-1 and CVE-GONE, and leaves the update window working for the next run.
+func failCatchUpOnce(t *testing.T) *bun.DB {
+	t.Helper()
 	db := setup(t, false)
 	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
 	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
@@ -216,8 +221,12 @@ func TestResumeRetiresRecordsAbsentFromTheDump(t *testing.T) {
 	if got := retiredAs(t, db, "GCVE-0-GONE"); got != "" {
 		t.Fatalf("record retired before the import finished: %q", got)
 	}
-
 	upstream.windowDown.Store(false)
+	return db
+}
+
+func TestResumeRetiresRecordsAbsentFromTheDump(t *testing.T) {
+	db := failCatchUpOnce(t)
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
@@ -231,17 +240,9 @@ func TestResumeRetiresRecordsAbsentFromTheDump(t *testing.T) {
 }
 
 func TestResumeStaysFailedWhenTheDumpCannotBeRead(t *testing.T) {
-	db := setup(t, false)
-	seedRows(t, db, "CVE-2026-1", "CVE-GONE")
-	upstream := &fakeUpstream{dump: dated("CVE-2026-1", time.Now()) + "\n", dumpTime: time.Now()}
-	upstream.windowDown.Store(true)
-	upstream.serve(t)
-	if err := Update(db, db); err == nil {
-		t.Fatal("a failed catch-up should fail the source")
-	}
+	db := failCatchUpOnce(t)
 	completedAt := bulkCompletedAt(t, db)
 
-	upstream.windowDown.Store(false)
 	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
@@ -260,5 +261,74 @@ func TestResumeStaysFailedWhenTheDumpCannotBeRead(t *testing.T) {
 	}
 	if got := retiredAs(t, db, "GCVE-0-GONE"); got != "" {
 		t.Errorf("record retired without a reconcile: %q", got)
+	}
+}
+
+func TestResumeImportsADumpRebuiltAfterTheBulkImport(t *testing.T) {
+	db := setup(t, false)
+	firstDump := time.Now().Add(-10 * 24 * time.Hour).Truncate(time.Second)
+	rebuilt := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Second)
+	lateUpdate := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	upstream := &fakeUpstream{
+		dump:     dated("CVE-2026-1", firstDump.Add(-time.Hour)) + "\n",
+		dumpTime: firstDump,
+		records:  map[string]time.Time{"CVE-2026-LATE": lateUpdate},
+	}
+	upstream.windowDown.Store(true)
+	upstream.serve(t)
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed catch-up should fail the source")
+	}
+
+	// CIRCL rebuilt the dump: it adds a record and holds an older version of the late one.
+	upstream.dump += dated("CVE-2026-NEW", rebuilt.Add(-time.Hour)) + "\n" +
+		dated("CVE-2026-LATE", rebuilt.Add(-time.Hour)) + "\n"
+	upstream.dumpTime = rebuilt
+	upstream.windowDown.Store(false)
+	if err := Update(db, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := retiredAs(t, db, "GCVE-0-2026-NEW"); got != "" {
+		t.Errorf("record of the rebuilt dump retired: %q", got)
+	}
+	if got := gcveRows(t, db); got != 3 {
+		t.Errorf("rows = %d, want the rebuilt dump's 3 records stored", got)
+	}
+	var updated time.Time
+	if err := db.NewRaw("SELECT date_updated FROM gcve WHERE gcve_id = ?", "GCVE-0-2026-LATE").Scan(context.Background(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Equal(lateUpdate) {
+		t.Errorf("late record updated at %v, want the caught-up version %v", updated, lateUpdate)
+	}
+	if got := testhelper.UpstreamTotal(t, db, knowledge.SourceGCVE); got == nil || *got != 3 {
+		t.Errorf("upstream_total = %v, want the rebuilt dump's 3 distinct records", got)
+	}
+	if got := upstream.bulkRequests.Load(); got != 2 {
+		t.Errorf("bulk requests = %d, want the first import and one read of the rebuilt dump", got)
+	}
+	testhelper.AssertSucceededAfter(t, db, knowledge.SourceGCVE, time.Time{})
+}
+
+func TestResumeRefusesADumpOlderThanTheBulkImport(t *testing.T) {
+	db := setup(t, false)
+	dumpTime := time.Now().Add(-2 * 24 * time.Hour).Truncate(time.Second)
+	upstream := &fakeUpstream{dump: dated("CVE-2026-1", dumpTime.Add(-time.Hour)) + "\n", dumpTime: dumpTime}
+	upstream.windowDown.Store(true)
+	upstream.serve(t)
+	if err := Update(db, db); err == nil {
+		t.Fatal("a failed catch-up should fail the source")
+	}
+
+	upstream.dumpTime = dumpTime.Add(-24 * time.Hour)
+	upstream.windowDown.Store(false)
+	if err := Update(db, db); err == nil {
+		t.Fatal("a dump older than the bulk import should fail the resume")
+	}
+
+	testhelper.AssertFailed(t, db, knowledge.SourceGCVE)
+	if got := bulkCompletedAt(t, db); !got.Equal(dumpTime) {
+		t.Errorf("bulk_completed_at = %v, want it kept at %v", got, dumpTime)
 	}
 }

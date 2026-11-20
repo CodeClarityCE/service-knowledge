@@ -102,7 +102,7 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 	}
 
 	if err := pgsql.RetireStoredRejectedGcve(db); err != nil {
-		return sourcesync.Result{}, err
+		return sourcesync.Result{}, fmt.Errorf("reconcile: %w", err)
 	}
 
 	if err := sourcesync.SetConfigLast(db_config, "gcve_last", syncedAt); err != nil {
@@ -112,15 +112,20 @@ func sync(db *bun.DB, db_config *bun.DB) (sourcesync.Result, error) {
 }
 
 // fullImport loads the dump, catches up from the dump's date and reconciles.
-// It records the bulk import as done first, so a later run can resume from catch-up.
 func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 	dumpTime, dumped, err := bulkImport(db, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("bulk import: %w", err)
 	}
 	warnIfStale(dumpTime, syncedAt)
+	return finishImport(db, dumpTime, dumped, syncedAt)
+}
+
+// finishImport records the bulk import as done, so a later run can resume from catch-up,
+// then catches up from the dump's date and reconciles.
+func finishImport(db *bun.DB, dumpTime time.Time, dumped []string, syncedAt time.Time) (*int64, error) {
 	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, dumpTime); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bulk import: %w", err)
 	}
 	caughtUp, err := catchUp(db, dumpTime)
 	if err != nil {
@@ -142,14 +147,28 @@ func warnIfStale(dumpTime, syncedAt time.Time) {
 	}).Warn("GCVE bulk dump is stale, relying on catch-up to cover the gap")
 }
 
-// resumeAfterBulk finishes a full import whose catch-up or reconcile failed, without importing the dump again.
-// It reads the dump again without storing it, to get the ids the reconcile needs.
-func resumeAfterBulk(db *bun.DB, dumpTime, syncedAt time.Time) (*int64, error) {
-	caughtUp, err := catchUp(db, dumpTime)
+// resumeAfterBulk finishes a full import whose catch-up or reconcile failed.
+// It reads the same dump again for its ids without storing it; a dump rebuilt since is imported instead.
+func resumeAfterBulk(db *bun.DB, bulkTime, syncedAt time.Time) (*int64, error) {
+	caughtUp, err := catchUp(db, bulkTime)
 	if err != nil {
 		return nil, err
 	}
-	dumped, err := dumpRecordIDs(dumpTime)
+	body, dumpTime, err := openDump(bulkTime)
+	if err != nil {
+		return nil, fmt.Errorf("read dump for reconcile: %w", err)
+	}
+	defer body.Close()
+
+	if dumpTime.After(bulkTime) {
+		logger.WithFields(logrus.Fields{"source": knowledge.SourceGCVE, "dump_time": dumpTime.UTC().Format(time.RFC3339)}).Info("GCVE bulk dump rebuilt since the bulk import, importing it")
+		dumped, err := storeDump(db, body)
+		if err != nil {
+			return nil, fmt.Errorf("bulk import: %w", err)
+		}
+		return finishImport(db, dumpTime, dumped, syncedAt)
+	}
+	dumped, err := dumpRecordIDs(body)
 	if err != nil {
 		return nil, fmt.Errorf("read dump for reconcile: %w", err)
 	}
@@ -215,14 +234,23 @@ func bulkImport(db *bun.DB, notBefore time.Time) (time.Time, []string, error) {
 	}
 	defer body.Close()
 
-	ids, err := processNDJSONStream(db, body)
+	ids, err := storeDump(db, body)
 	if err != nil {
 		return time.Time{}, nil, err
 	}
-	if len(ids) == 0 {
-		return time.Time{}, nil, fmt.Errorf("cvelistv5 dump: %w", sourcesync.ErrNoUpstreamRecords)
-	}
 	return dumpTime, ids, nil
+}
+
+// storeDump stores every record of a dump and returns their ids.
+func storeDump(db *bun.DB, body io.Reader) ([]string, error) {
+	ids, err := processNDJSONStream(db, body)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("cvelistv5 dump: %w", sourcesync.ErrNoUpstreamRecords)
+	}
+	return ids, nil
 }
 
 // openDump requests the cvelistv5 dump and checks its date is not older than notBefore.
@@ -248,14 +276,8 @@ func openDump(notBefore time.Time) (io.ReadCloser, time.Time, error) {
 }
 
 // dumpRecordIDs reads the id of every dump record without storing anything.
-func dumpRecordIDs(notBefore time.Time) ([]string, error) {
+func dumpRecordIDs(body io.Reader) ([]string, error) {
 	logger.Info("Reading cvelistv5 bulk dump for its record ids")
-	body, _, err := openDump(notBefore)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-
 	scanner := newRecordScanner(body)
 	var ids []string
 	parseErrors := 0
