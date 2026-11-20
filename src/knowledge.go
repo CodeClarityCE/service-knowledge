@@ -15,6 +15,7 @@ import (
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/epss"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/gcve"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/js"
+	"github.com/CodeClarityCE/service-knowledge/src/mirrors/kev"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/licenses"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/nvd"
 	"github.com/CodeClarityCE/service-knowledge/src/mirrors/osv"
@@ -164,6 +165,7 @@ func updateSteps(knowledgeDB *bun.DB, configDB *bun.DB) []updateStep {
 		{knowledgedb.SourceNVD, func() error { return nvd.Update(knowledgeDB, configDB) }},
 		{knowledgedb.SourceGCVE, func() error { return gcve.Update(knowledgeDB, configDB) }},
 		{knowledgedb.SourceFriendsOfPHP, func() error { return php_security.Update(knowledgeDB) }},
+		{knowledgedb.SourceKEV, func() error { return kev.Update(knowledgeDB, configDB) }},
 		{"npm", func() error { return js.Follow(knowledgeDB, configDB) }},
 	}
 }

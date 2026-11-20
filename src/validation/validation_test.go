@@ -17,6 +17,7 @@ CREATE TABLE nvd (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), retired_at time
 CREATE TABLE gcve (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), retired_at timestamptz);
 CREATE TABLE friends_of_php (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), retired_at timestamptz);
 CREATE TABLE epss (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE kev (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE cwe (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE licenses (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE package_vulnerability (
@@ -28,7 +29,7 @@ var now = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 
 var allSources = []string{
 	knowledge.SourceCWE, knowledge.SourceEPSS, knowledge.SourceFriendsOfPHP, knowledge.SourceGCVE,
-	knowledge.SourceLicenses, knowledge.SourceNVD, knowledge.SourceOSV,
+	knowledge.SourceKEV, knowledge.SourceLicenses, knowledge.SourceNVD, knowledge.SourceOSV,
 }
 
 func exec(t *testing.T, db *bun.DB, query string, args ...any) {
@@ -225,6 +226,8 @@ func TestSourcePastItsThresholdIsStale(t *testing.T) {
 		{knowledge.SourceEPSS, 25 * time.Hour, true},
 		{knowledge.SourceNVD, 47 * time.Hour, false},
 		{knowledge.SourceGCVE, 49 * time.Hour, true},
+		{knowledge.SourceKEV, 47 * time.Hour, false},
+		{knowledge.SourceKEV, 49 * time.Hour, true},
 		{knowledge.SourceCWE, 6 * 24 * time.Hour, false},
 		{knowledge.SourceLicenses, 8 * 24 * time.Hour, true},
 		{knowledge.SourceFriendsOfPHP, 8 * 24 * time.Hour, true},
