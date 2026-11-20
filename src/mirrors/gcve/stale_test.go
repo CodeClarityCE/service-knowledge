@@ -21,7 +21,7 @@ func staleDumpWarnings(hook *logtest.Hook) []logrus.Entry {
 	return out
 }
 
-func TestFullImportFromAWeeksOldDumpWarnsAndSucceeds(t *testing.T) {
+func TestFullImportFromATenDayOldDumpWarnsAndSucceeds(t *testing.T) {
 	db := setup(t, false)
 	dumpTime := time.Now().Add(-10 * 24 * time.Hour)
 	upstream := &fakeUpstream{

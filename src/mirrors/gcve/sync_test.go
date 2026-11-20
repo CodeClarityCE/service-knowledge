@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,8 +125,9 @@ func TestFailedDumpDownloadLeavesNoWatermark(t *testing.T) {
 	db := setup(t, false)
 	serve(t, "[]", "", http.StatusBadGateway)
 
-	if err := Update(db, db); err == nil {
-		t.Fatal("a failed dump download should fail the source")
+	err := Update(db, db)
+	if err == nil || !strings.HasPrefix(err.Error(), "gcve: bulk import: ") {
+		t.Fatalf("update = %v, want a failure naming the bulk import", err)
 	}
 	if got := testhelper.ConfigTimeIsNull(t, db, "gcve_last"); !got {
 		t.Error("gcve_last should stay unset")
@@ -171,19 +173,8 @@ func TestUnreadableIncrementalResponseFallsBackToBulkDump(t *testing.T) {
 	}
 }
 
-const otherRecord = `{"cveMetadata":{"cveId":"CVE-2026-0003","state":"PUBLISHED"},"containers":{"cna":{"affected":[{"vendor":"v","product":"q"}]}}}`
-
-// breakWindow points the update window at a server answering 502 until the returned function is called.
-func breakWindow(t *testing.T) (repair func()) {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	t.Cleanup(server.Close)
-	working := vulnerabilityAPI
-	vulnerabilityAPI = server.URL
-	return func() { vulnerabilityAPI = working }
-}
+// windowOnlyRecord is served by the update window and absent from the dump.
+const windowOnlyRecord = `{"cveMetadata":{"cveId":"CVE-2026-0003","state":"PUBLISHED"},"containers":{"cna":{"affected":[{"vendor":"v","product":"q"}]}}}`
 
 func bulkCompletedAt(t *testing.T, db *bun.DB) time.Time {
 	t.Helper()
@@ -209,7 +200,7 @@ func TestIncrementalRunKeepsTheRecordedUpstreamTotal(t *testing.T) {
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
 	}
-	serve(t, "["+otherRecord+"]", record, http.StatusOK)
+	serve(t, "["+windowOnlyRecord+"]", record, http.StatusOK)
 
 	if err := Update(db, db); err != nil {
 		t.Fatal(err)
@@ -224,8 +215,9 @@ func TestRepeatedCatchUpFailureKeepsSourceFailedAndBulkTime(t *testing.T) {
 	stale := time.Now().Add(-40 * 24 * time.Hour).Truncate(time.Second)
 	db := setup(t, false)
 	testhelper.SeedWatermark(t, db, knowledge.SourceGCVE, stale)
-	bulkDownloads := serve(t, "[]", record, http.StatusOK)
-	breakWindow(t)
+	upstream := &fakeUpstream{dump: record, dumpTime: time.Now()}
+	upstream.windowDown.Store(true)
+	upstream.serve(t)
 
 	if err := Update(db, db); err == nil {
 		t.Fatal("a failed catch-up should fail the source")
@@ -243,7 +235,7 @@ func TestRepeatedCatchUpFailureKeepsSourceFailedAndBulkTime(t *testing.T) {
 	if got := bulkCompletedAt(t, db); !got.Equal(completedAt) {
 		t.Errorf("bulk_completed_at = %v, want it kept at %v", got, completedAt)
 	}
-	if got := bulkDownloads.Load(); got != 1 {
+	if got := upstream.bulkRequests.Load(); got != 1 {
 		t.Errorf("bulk downloads = %d, want 1", got)
 	}
 	if !testhelper.ConfigTimeIsNull(t, db, "gcve_last") {
