@@ -46,6 +46,8 @@ const (
 	windowPageSize = 100
 	// windowOverlap re-reads recent records, because upstream can publish a change late.
 	windowOverlap = 24 * time.Hour
+	// staleDumpAge is how old a dump can be at a full import before the run warns.
+	staleDumpAge = 7 * 24 * time.Hour
 	// maxWindowRequests stops a misbehaving API from keeping the run going forever.
 	maxWindowRequests = 5000
 	maxWindowRetries  = 5
@@ -116,6 +118,7 @@ func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bulk import: %w", err)
 	}
+	warnIfStale(dumpTime, syncedAt)
 	if err := sourcesync.SetBulkCompletedAt(db, knowledge.SourceGCVE, dumpTime); err != nil {
 		return nil, err
 	}
@@ -124,6 +127,19 @@ func fullImport(db *bun.DB, syncedAt time.Time) (*int64, error) {
 		return nil, err
 	}
 	return reconcile(db, dumped, caughtUp, syncedAt)
+}
+
+// warnIfStale logs a warning when the dump was built more than staleDumpAge before the run started.
+func warnIfStale(dumpTime, syncedAt time.Time) {
+	age := syncedAt.Sub(dumpTime)
+	if age <= staleDumpAge {
+		return
+	}
+	logger.WithFields(logrus.Fields{
+		"source":        knowledge.SourceGCVE,
+		"dump_age_days": int(age.Hours() / 24),
+		"dump_time":     dumpTime.UTC().Format(time.RFC3339),
+	}).Warn("GCVE bulk dump is stale, relying on catch-up to cover the gap")
 }
 
 // resumeAfterBulk finishes a full import whose catch-up or reconcile failed, without importing the dump again.
