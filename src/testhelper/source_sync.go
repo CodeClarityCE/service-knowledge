@@ -54,7 +54,7 @@ CREATE TABLE migrations (
 const configDDL = `
 CREATE TABLE config (
 	id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-	nvd_last timestamptz, npm_last text, gcve_last timestamptz, osv_last timestamptz
+	nvd_last timestamptz, npm_last text, gcve_last timestamptz, osv_last timestamptz, kev_last timestamptz
 )`
 
 // uuidShimDDL stands in for the uuid-ossp extension; models default their ids to it.
@@ -283,4 +283,27 @@ func UpstreamTotal(t *testing.T, db *bun.DB, source string) *int64 {
 		return nil
 	}
 	return &total.Int64
+}
+
+// kevDDL matches the CreateKevTable API migration.
+const kevDDL = `
+CREATE TABLE kev (
+	id uuid NOT NULL DEFAULT uuid_generate_v4() PRIMARY KEY,
+	cve character varying NOT NULL UNIQUE,
+	vendor_project character varying,
+	product character varying,
+	vulnerability_name character varying,
+	date_added date NOT NULL,
+	due_date date,
+	short_description text,
+	required_action text,
+	notes text,
+	known_ransomware_use boolean NOT NULL DEFAULT false,
+	cwes jsonb NOT NULL DEFAULT '[]'
+)`
+
+// CreateKEVTable creates kev as the API migrations leave it.
+func CreateKEVTable(t *testing.T, db *bun.DB) {
+	t.Helper()
+	execAll(t, db, kevDDL)
 }

@@ -6,8 +6,8 @@ github.com/CodeClarityCE/utility-dbhelper v0.0.23-alpha h1:oRtk0BnPuM2ob2iWlSILI
 github.com/CodeClarityCE/utility-dbhelper v0.0.23-alpha/go.mod h1:dOs+HiUAoKYl17Y0oc0SlYw2uo4Jo6GMzKEEDhrnOHs=
 github.com/CodeClarityCE/utility-node-semver v0.0.12-alpha h1:BpFEiFpCNroqLF0nL1rX2UdoFJjvfgcu+LQXrdJivfU=
 github.com/CodeClarityCE/utility-node-semver v0.0.12-alpha/go.mod h1:Uu+NSoXYhpxwdPKMOVSKh/75vEespBP6dGh6GNOp16A=
-github.com/CodeClarityCE/utility-types v0.0.26-alpha h1:yBb4g6EwZU2qcLLOSqo7Byq4lYOy6viPPQMnJr/DFPM=
-github.com/CodeClarityCE/utility-types v0.0.26-alpha/go.mod h1:sK7bxNhjC0FcXItepuja6qFzv2AmnVo3QlRg0Ve9unc=
+github.com/CodeClarityCE/utility-types v0.0.27-alpha h1:51gvuI3qXXlCozvYFenQ8loA0JGjWgknBQX88bzGfZA=
+github.com/CodeClarityCE/utility-types v0.0.27-alpha/go.mod h1:sK7bxNhjC0FcXItepuja6qFzv2AmnVo3QlRg0Ve9unc=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

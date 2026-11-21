@@ -7,7 +7,7 @@ require (
 	github.com/CodeClarityCE/utility-boilerplates v0.0.16-alpha
 	github.com/CodeClarityCE/utility-dbhelper v0.0.23-alpha
 	github.com/CodeClarityCE/utility-node-semver v0.0.12-alpha
-	github.com/CodeClarityCE/utility-types v0.0.26-alpha
+	github.com/CodeClarityCE/utility-types v0.0.27-alpha
 	github.com/google/uuid v1.6.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.19.1

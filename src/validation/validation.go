@@ -47,7 +47,7 @@ func (r Report) Failed() bool {
 // sources lists every knowledge source validation covers.
 var sources = []string{
 	knowledge.SourceCWE, knowledge.SourceEPSS, knowledge.SourceFriendsOfPHP, knowledge.SourceGCVE,
-	knowledge.SourceLicenses, knowledge.SourceNVD, knowledge.SourceOSV,
+	knowledge.SourceKEV, knowledge.SourceLicenses, knowledge.SourceNVD, knowledge.SourceOSV,
 }
 
 // staleAfter is how old each source's watermark may be. Keep these equal to the
@@ -57,6 +57,7 @@ var staleAfter = map[string]time.Duration{
 	knowledge.SourceEPSS:         24 * time.Hour,
 	knowledge.SourceNVD:          48 * time.Hour,
 	knowledge.SourceGCVE:         48 * time.Hour,
+	knowledge.SourceKEV:          48 * time.Hour,
 	knowledge.SourceCWE:          7 * 24 * time.Hour,
 	knowledge.SourceLicenses:     7 * 24 * time.Hour,
 	knowledge.SourceFriendsOfPHP: 7 * 24 * time.Hour,
