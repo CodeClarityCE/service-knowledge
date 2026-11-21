@@ -24,10 +24,12 @@ var (
 		"AddKnowledgeSourceUpstreamTotal1794528000000",
 		"AllowMissingFriendsOfPhpDates1794614400000",
 		"WidenPackageLicense1795392000000",
+		"CreateKevTable1795651200000",
 	}
 	ExpectedConfigMigrations = []string{
 		"CreateConfigBaseline1754600000000",
 		"AddGcveLastToConfig1770200000000",
 		"AddOsvLastToConfig1785829532189",
+		"AddKevLastToConfig1795651200000",
 	}
 )
