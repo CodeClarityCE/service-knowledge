@@ -23,6 +23,7 @@ var (
 		"AddKnowledgeSourceOrigins1794441600000",
 		"AddKnowledgeSourceUpstreamTotal1794528000000",
 		"AllowMissingFriendsOfPhpDates1794614400000",
+		"WidenPackageLicense1795392000000",
 	}
 	ExpectedConfigMigrations = []string{
 		"CreateConfigBaseline1754600000000",
