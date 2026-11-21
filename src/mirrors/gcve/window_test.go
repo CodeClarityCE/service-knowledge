@@ -28,12 +28,18 @@ type fakeUpstream struct {
 	dump         string
 	dumpTime     time.Time
 	bulkRequests atomic.Int32
-	firstSince   atomic.Value
-	queries      atomic.Value
+	// windowDown makes the window endpoint answer 502.
+	windowDown atomic.Bool
+	firstSince atomic.Value
+	queries    atomic.Value
 }
 
 func (f *fakeUpstream) window(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if f.windowDown.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		q := r.URL.Query()
 		f.queries.CompareAndSwap(nil, r.URL.RawQuery)
 		since, err := time.Parse(time.RFC3339Nano, q.Get("since"))
@@ -76,15 +82,9 @@ func (f *fakeUpstream) serve(t *testing.T) {
 		}
 		fmt.Fprint(w, f.dump)
 	})
-	// Vulnrichment enriches records the dump already holds.
-	mux.HandleFunc("/rich", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, f.dump) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	originalBulk, originalRich, originalWindow, originalInterval := bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval
-	bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = server.URL+"/bulk", server.URL+"/rich", server.URL+"/window", 0
-	t.Cleanup(func() {
-		bulkDumpURL, vulnrichmentURL, vulnerabilityAPI, windowRequestInterval = originalBulk, originalRich, originalWindow, originalInterval
-	})
+	t.Cleanup(UseUpstream(server.URL+"/bulk", server.URL+"/window"))
 }
 
 func gcveRows(t *testing.T, db *bun.DB) int {

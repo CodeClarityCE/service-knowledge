@@ -151,7 +151,7 @@ func ResetWatermark(db *bun.DB, source string) error {
 }
 
 // BulkCompletedAt returns the time a finished bulk import is current to while
-// its enrichment is pending, or the zero time if none is pending.
+// its catch-up and reconcile are pending, or the zero time if none are pending.
 func BulkCompletedAt(db *bun.DB, source string) (time.Time, error) {
 	var completedAt sql.NullTime
 	err := db.NewSelect().
@@ -165,7 +165,7 @@ func BulkCompletedAt(db *bun.DB, source string) (time.Time, error) {
 	return completedAt.Time, nil
 }
 
-// SetBulkCompletedAt records only that a bulk import is done and enrichment is pending.
+// SetBulkCompletedAt records only that a bulk import is done and its catch-up and reconcile are pending.
 func SetBulkCompletedAt(db *bun.DB, source string, completedAt time.Time) error {
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO knowledge_source_sync (source, bulk_completed_at) VALUES (?, ?)
