@@ -29,3 +29,5 @@ zip/
 error.log
 licenses.txt
 tmp
+# Local go build output
+/service-knowledge
