@@ -23,6 +23,9 @@ var catalogURL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited
 const configColumn = "kev_last"
 
 // Update mirrors the whole catalog, removes entries it no longer lists and advances the watermark.
+// httpClient bounds each download; the KEV catalog is a few MB.
+var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
 func Update(db *bun.DB, configDB *bun.DB) error {
 	return sourcesync.RunCounted(db, knowledge.SourceKEV, func() (sourcesync.Result, error) {
 		syncedAt := time.Now()
@@ -69,7 +72,7 @@ type catalogEntry struct {
 
 // download returns every catalog entry. Any defect fails the whole download.
 func download(url string) ([]knowledge.KEV, error) {
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, err
 	}

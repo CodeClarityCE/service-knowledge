@@ -260,16 +260,16 @@ func openDump(notBefore time.Time) (io.ReadCloser, time.Time, error) {
 		return nil, time.Time{}, fmt.Errorf("failed to download bulk dump: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, time.Time{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 	dumpTime, err := http.ParseTime(resp.Header.Get("Last-Modified"))
 	if err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, time.Time{}, fmt.Errorf("bulk dump has no usable Last-Modified: %w", err)
 	}
 	if dumpTime.Before(notBefore) {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, time.Time{}, fmt.Errorf("bulk dump from %s is older than the watermark %s", dumpTime.Format(time.RFC3339), notBefore.Format(time.RFC3339))
 	}
 	return resp.Body, dumpTime, nil
@@ -794,12 +794,12 @@ func fetchWindowPage(since time.Time, page int) ([]byte, error) {
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			delay, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			time.Sleep(time.Duration(delay) * time.Second)
 			continue
 		}
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}

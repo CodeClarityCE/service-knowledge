@@ -71,8 +71,12 @@ func (r *repository) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 			panic(err)
 		}
 	}
-	archive.Close()
-	gz.Close()
+	if err := archive.Close(); err != nil {
+		panic(err)
+	}
+	if err := gz.Close(); err != nil {
+		panic(err)
+	}
 	w.Header().Set("Content-Type", "application/x-gzip")
 	_, _ = w.Write(buffer.Bytes())
 }

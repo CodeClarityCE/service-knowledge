@@ -85,7 +85,7 @@ const osvScope = `EXISTS (
 // ReconcileOsv retires active in-scope advisories that a complete snapshot no longer contains.
 // Call it only after every ecosystem downloaded and stored without error.
 func ReconcileOsv(db *bun.DB, snapshotIDs []string, ecosystems []string, retiredAt time.Time) error {
-	return retireAbsent(db, knowledge.SourceOSV, "osv", "osv_id", "osv_id", osvScope, []any{bun.In(ecosystems)}, snapshotIDs, retiredAt)
+	return retireAbsent(db, knowledge.SourceOSV, "osv", "osv_id", "osv_id", osvScope, []any{bun.List(ecosystems)}, snapshotIDs, retiredAt)
 }
 
 // retireAndUnlink retires the rows of table matching where, setting retired_at from retiredAt, and drops their package links.
@@ -133,7 +133,7 @@ func retireAbsent(db *bun.DB, source, table, keyColumn, linkColumn, scope string
 	query := db.NewRaw("SELECT ? FROM ? WHERE retired_reason IS NULL AND ("+scope+")", read...)
 	return removeAbsent(db, source, query, snapshot, func(ctx context.Context, tx bun.Tx, chunk []string) error {
 		return retireAndUnlink(ctx, tx, table, linkColumn, knowledge.RetiredRemoved, "?", "? IN (?) AND retired_reason IS NULL",
-			retiredAt, bun.Ident(keyColumn), bun.In(chunk))
+			retiredAt, bun.Ident(keyColumn), bun.List(chunk))
 	})
 }
 
@@ -161,13 +161,13 @@ func SyncOsvRetirement(db *bun.DB, osvIDs []string) error {
 		return eachChunk(osvIDs, func(chunk []string) error {
 			err := retireAndUnlink(ctx, tx, "osv", "osv_id", knowledge.RetiredWithdrawn, "withdrawn",
 				"osv_id IN (?) AND withdrawn IS NOT NULL AND (retired_reason IS DISTINCT FROM ? OR retired_at IS DISTINCT FROM withdrawn)",
-				bun.In(chunk), knowledge.RetiredWithdrawn)
+				bun.List(chunk), knowledge.RetiredWithdrawn)
 			if err != nil {
 				return fmt.Errorf("retire withdrawn OSV advisories: %w", err)
 			}
 			_, err = tx.ExecContext(ctx, `
 				UPDATE osv SET retired_reason = NULL, retired_at = NULL
-				WHERE osv_id IN (?) AND withdrawn IS NULL AND retired_reason IS NOT NULL`, bun.In(chunk))
+				WHERE osv_id IN (?) AND withdrawn IS NULL AND retired_reason IS NOT NULL`, bun.List(chunk))
 			if err != nil {
 				return fmt.Errorf("reactivate OSV advisories: %w", err)
 			}
@@ -238,7 +238,7 @@ func clearRetirement(ctx context.Context, tx bun.Tx, table, idColumn string, ids
 	return eachChunk(ids, func(chunk []string) error {
 		_, err := tx.ExecContext(ctx,
 			"UPDATE ? SET retired_reason = NULL, retired_at = NULL WHERE ? IN (?) AND retired_reason IS NOT NULL",
-			bun.Ident(table), bun.Ident(idColumn), bun.In(chunk))
+			bun.Ident(table), bun.Ident(idColumn), bun.List(chunk))
 		return err
 	})
 }
@@ -247,7 +247,7 @@ func clearRetirement(ctx context.Context, tx bun.Tx, table, idColumn string, ids
 func reconcileSnapshotTable(db *bun.DB, source, table, keyColumn string, snapshot []string) error {
 	query := db.NewRaw("SELECT ? FROM ?", bun.Ident(keyColumn), bun.Ident(table))
 	return removeAbsent(db, source, query, snapshot, func(ctx context.Context, tx bun.Tx, chunk []string) error {
-		_, err := tx.ExecContext(ctx, "DELETE FROM ? WHERE ? IN (?)", bun.Ident(table), bun.Ident(keyColumn), bun.In(chunk))
+		_, err := tx.ExecContext(ctx, "DELETE FROM ? WHERE ? IN (?)", bun.Ident(table), bun.Ident(keyColumn), bun.List(chunk))
 		return err
 	})
 }
@@ -275,7 +275,7 @@ func replacePackageLinks(db *bun.DB, column string, advisoryIDs []uuid.UUID, lin
 	ctx := context.Background()
 	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		err := eachChunk(advisoryIDs, func(chunk []uuid.UUID) error {
-			_, err := tx.ExecContext(ctx, "DELETE FROM package_vulnerability WHERE ? IN (?)", bun.Ident(column), bun.In(chunk))
+			_, err := tx.ExecContext(ctx, "DELETE FROM package_vulnerability WHERE ? IN (?)", bun.Ident(column), bun.List(chunk))
 			if err != nil {
 				return fmt.Errorf("delete package links: %w", err)
 			}

@@ -82,7 +82,7 @@ func loadAdvisories(dir string, asof time.Time) ([]knowledge.OSVItem, loadStats,
 			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // G304: walking the operator-given snapshot directory
 		if err != nil {
 			return err
 		}

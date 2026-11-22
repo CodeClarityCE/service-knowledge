@@ -18,7 +18,7 @@ const entrySize = 256 << 10
 func writeArchive(t *testing.T, size int64) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "all.zip")
-	out, err := os.Create(path)
+	out, err := os.Create(path) //nolint:gosec // G304: the test's own temp dir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,11 @@ func TestArchiveMemoryStaysFlatAsZipGrows(t *testing.T) {
 	large := peakHeap(t, 96<<20)
 
 	// Reading the 96 MB archive into memory would add about 88 MB over the small one.
-	if growth := int64(large) - int64(small); growth > 8<<20 {
+	var growth uint64
+	if large > small {
+		growth = large - small
+	}
+	if growth > 8<<20 {
 		t.Errorf("peak heap grew by %d MB from an 8 MB to a 96 MB archive (small %d MB, large %d MB)",
 			growth>>20, small>>20, large>>20)
 	}
@@ -94,7 +98,7 @@ func TestArchiveLeavesNoTemporaryFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	path := writeArchive(t, entrySize)
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(path) //nolint:gosec // G304: the test's own temp dir
 	if err != nil {
 		t.Fatal(err)
 	}

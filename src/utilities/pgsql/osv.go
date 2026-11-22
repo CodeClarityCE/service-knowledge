@@ -102,7 +102,7 @@ func GetOsvUUIDsByOsvIds(db *bun.DB, osvIds []string) (map[string]uuid.UUID, err
 	err := db.NewSelect().
 		TableExpr("osv").
 		Column("id", "osv_id").
-		Where("osv_id IN (?)", bun.In(osvIds)).
+		Where("osv_id IN (?)", bun.List(osvIds)).
 		Scan(ctx, &results)
 
 	if err != nil {

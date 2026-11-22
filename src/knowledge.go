@@ -124,7 +124,9 @@ func setupDatabases(confirm bool, daemonMode bool) error {
 			return err
 		}
 
-		dbhelper.CreateTable(dbhelper.Config.Database.Plugins)
+		if err := dbhelper.CreateTable(dbhelper.Config.Database.Plugins); err != nil {
+			return err
+		}
 	} else {
 		log.Println("Daemon mode: Skipping creation of shared databases (codeclarity, plugins, config) to avoid conflicts")
 	}

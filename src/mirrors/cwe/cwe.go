@@ -10,15 +10,19 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
 
 // Write a function that downloads an XML file from the CWE website
+// httpClient bounds each download; the CWE catalog is a few MB.
+var httpClient = &http.Client{Timeout: 5 * time.Minute}
+
 func downloadFile(url string) (knowledge.CWEListImport, error) {
 	// Get the data
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		log.Println(err)
 		return knowledge.CWEListImport{}, err
