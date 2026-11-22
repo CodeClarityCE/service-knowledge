@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/CodeClarityCE/utility-boilerplates/testdeps"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
@@ -60,8 +60,7 @@ CREATE TABLE config (
 // uuidShimDDL stands in for the uuid-ossp extension; models default their ids to it.
 const uuidShimDDL = `CREATE FUNCTION uuid_generate_v4() RETURNS uuid AS 'SELECT gen_random_uuid()' LANGUAGE SQL`
 
-// SetupSyncTestDB opens a fresh schema in the throwaway database named by
-// KNOWLEDGE_SYNC_TEST_DSN, holding the source sync and config tables.
+// SetupSyncTestDB opens a fresh schema in a throwaway database, holding the source sync and config tables.
 func SetupSyncTestDB(t *testing.T) *bun.DB {
 	t.Helper()
 	db := openSchema(t, testDSN(t))
@@ -86,11 +85,7 @@ func SetupBuildTestDBs(t *testing.T) (knowledgeDB, configDB *bun.DB) {
 
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("KNOWLEDGE_SYNC_TEST_DSN")
-	if dsn == "" {
-		t.Skip("KNOWLEDGE_SYNC_TEST_DSN is not set")
-	}
-	return dsn
+	return testdeps.PostgresDSN(t)
 }
 
 // openSchema creates a random schema, opens a connection that uses it, and drops it after the test.

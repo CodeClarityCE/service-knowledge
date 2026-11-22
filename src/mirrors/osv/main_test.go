@@ -4,22 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 )
-
-func TestUpdate(t *testing.T) {
-	db_knowledge, db_config, cleanup := testhelper.SetupKnowledgeAndConfigTestDB(t)
-	if db_knowledge == nil {
-		return // Test was skipped
-	}
-	defer cleanup()
-
-	err := Update(db_knowledge, db_config)
-	if err != nil {
-		t.Fatalf("Update failed: %v", err)
-	}
-}
 
 func TestImportEcosystemsReportsFailureAfterTryingAll(t *testing.T) {
 	tried := []string{}

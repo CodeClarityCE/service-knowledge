@@ -4,31 +4,33 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
+	"github.com/CodeClarityCE/utility-boilerplates/testdeps"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 )
 
-// openLockTestDB connects to KNOWLEDGE_LOCK_TEST_DSN, which may point at Postgres or pgbouncer.
-func openLockTestDB(t *testing.T) *bun.DB {
+// openLockTestDBs opens n separate clients of one throwaway database.
+func openLockTestDBs(t *testing.T, n int) []*bun.DB {
 	t.Helper()
-	dsn := os.Getenv("KNOWLEDGE_LOCK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("KNOWLEDGE_LOCK_TEST_DSN is not set")
+	dsn := testdeps.PostgresDSN(t)
+	dbs := make([]*bun.DB, n)
+	for i := range dbs {
+		dbs[i] = bun.NewDB(sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn))), pgdialect.New())
+		db := dbs[i]
+		t.Cleanup(func() { _ = db.Close() })
 	}
-	db := bun.NewDB(sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn))), pgdialect.New())
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return dbs
 }
 
 func noop() error { return nil }
 
 func TestUpdateLockBlocksOverlappingRuns(t *testing.T) {
-	holder, other := openLockTestDB(t), openLockTestDB(t)
+	dbs := openLockTestDBs(t, 2)
+	holder, other := dbs[0], dbs[1]
 	ctx := context.Background()
 
 	err := WithUpdateLock(ctx, holder, func() error {
@@ -56,7 +58,7 @@ func TestUpdateLockBlocksOverlappingRuns(t *testing.T) {
 }
 
 func TestUpdateLockIsReleasedAfterFailedRun(t *testing.T) {
-	db := openLockTestDB(t)
+	db := openLockTestDBs(t, 1)[0]
 	ctx := context.Background()
 
 	failure := errors.New("source failed")
@@ -69,7 +71,7 @@ func TestUpdateLockIsReleasedAfterFailedRun(t *testing.T) {
 }
 
 func TestUpdateLockIsReleasedAfterPanic(t *testing.T) {
-	db := openLockTestDB(t)
+	db := openLockTestDBs(t, 1)[0]
 	ctx := context.Background()
 
 	func() {
@@ -82,7 +84,8 @@ func TestUpdateLockIsReleasedAfterPanic(t *testing.T) {
 }
 
 func TestUpdateLockIsReleasedWhenHolderDies(t *testing.T) {
-	holder, other := openLockTestDB(t), openLockTestDB(t)
+	dbs := openLockTestDBs(t, 2)
+	holder, other := dbs[0], dbs[1]
 	ctx := context.Background()
 
 	_ = WithUpdateLock(ctx, holder, func() error { return holder.Close() })
