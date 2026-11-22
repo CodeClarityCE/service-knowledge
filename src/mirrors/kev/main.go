@@ -69,7 +69,7 @@ type catalogEntry struct {
 
 // download returns every catalog entry. Any defect fails the whole download.
 func download(url string) ([]knowledge.KEV, error) {
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, err
 	}

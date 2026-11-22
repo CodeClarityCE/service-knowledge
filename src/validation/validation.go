@@ -203,7 +203,7 @@ func ResetRowFloors(db *bun.DB, resetSources ...string) error {
 	_, err := db.NewUpdate().
 		Table("knowledge_source_sync").
 		Set("validated_row_count = NULL, validated_malicious_count = NULL").
-		Where("source IN (?)", bun.In(resetSources)).
+		Where("source IN (?)", bun.List(resetSources)).
 		Exec(context.Background())
 	if err != nil {
 		return fmt.Errorf("reset row floors: %w", err)

@@ -127,7 +127,7 @@ func GetGcveUUIDsByGcveIds(db *bun.DB, gcveIds []string) (map[string]uuid.UUID, 
 	err := db.NewSelect().
 		TableExpr("gcve").
 		Column("id", "gcve_id").
-		Where("gcve_id IN (?)", bun.In(gcveIds)).
+		Where("gcve_id IN (?)", bun.List(gcveIds)).
 		Scan(ctx, &results)
 
 	if err != nil {

@@ -144,7 +144,7 @@ func GetFriendsOfPHPUUIDsByAdvisoryIds(db *bun.DB, advisoryIds []string) (map[st
 	err := db.NewSelect().
 		TableExpr("friends_of_php").
 		Column("id", "advisory_id").
-		Where("advisory_id IN (?)", bun.In(advisoryIds)).
+		Where("advisory_id IN (?)", bun.List(advisoryIds)).
 		Scan(ctx, &results)
 
 	if err != nil {
@@ -180,7 +180,7 @@ func AdoptPackagistFriendsOfPHP(db *bun.DB, snapshotIDs []string) error {
 					ORDER BY path, id
 				)
 				UPDATE friends_of_php SET advisory_id = candidate.path FROM candidate WHERE friends_of_php.id = candidate.id`,
-				bun.In(chunk))
+				bun.List(chunk))
 			if err != nil {
 				return fmt.Errorf("adopt Packagist FriendsOfPHP rows: %w", err)
 			}

@@ -79,24 +79,24 @@ func setupTestDB(t *testing.T, schema string) *bun.DB {
 
 	admin := openTestDB("postgres")
 	if err := admin.PingContext(ctx); err != nil {
-		admin.Close()
+		_ = admin.Close()
 		t.Skipf("Skipping test due to database connection error: %v", err)
 	}
 
 	name := "nvd_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		admin.Close()
+		_ = admin.Close()
 		t.Fatalf("create test database: %v", err)
 	}
 
 	sqldb := openTestDB(name)
 	db := bun.NewDB(sqldb, pgdialect.New())
 	t.Cleanup(func() {
-		db.Close()
+		_ = db.Close()
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE "+name+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop test database: %v", err)
 		}
-		admin.Close()
+		_ = admin.Close()
 	})
 
 	if _, err := db.ExecContext(ctx, schema); err != nil {

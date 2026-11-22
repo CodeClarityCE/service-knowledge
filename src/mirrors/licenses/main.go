@@ -65,7 +65,7 @@ var licensesURL = "https://raw.githubusercontent.com/spdx/license-list-data/main
 // Returns the licenses and an error if there is a problem when fetching or parsing the licenses.
 func downloadLicenses() ([]knowledge.License, error) {
 	// Get licenses from remote source
-	resp, err := http.Get(licensesURL)
+	resp, err := http.Get(licensesURL) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		log.Println("No response from request")
 		return nil, err

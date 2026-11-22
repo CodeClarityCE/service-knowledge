@@ -1,16 +1,15 @@
 package knowledge
 
 import (
-	"os"
 	"testing"
 )
 
 func TestParsePairs(t *testing.T) {
-	os.Setenv("NPM_URL", "https://replicate.npmjs.com/")
-	os.Setenv("PG_DB_HOST", "127.0.0.1")
-	os.Setenv("PG_DB_PORT", "5432")
-	os.Setenv("PG_DB_USER", "postgres")
-	os.Setenv("PG_DB_PASSWORD", "!ChangeMe!")
+	t.Setenv("NPM_URL", "https://replicate.npmjs.com/")
+	t.Setenv("PG_DB_HOST", "127.0.0.1")
+	t.Setenv("PG_DB_PORT", "5432")
+	t.Setenv("PG_DB_USER", "postgres")
+	t.Setenv("PG_DB_PASSWORD", "!ChangeMe!")
 
 	// Note: This test requires a running PostgreSQL instance with the knowledge and config databases.
 	// In a real CI environment, you would set up test databases or use mocks.

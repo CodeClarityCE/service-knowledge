@@ -1,14 +1,13 @@
 package nvd
 
 import (
-	"os"
 	"testing"
 
 	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 )
 
 func TestUpdate(t *testing.T) {
-	os.Setenv("NVD_API_KEY", "")
+	t.Setenv("NVD_API_KEY", "")
 
 	db_knowledge, db_config, cleanup := testhelper.SetupKnowledgeAndConfigTestDB(t)
 	if db_knowledge == nil {

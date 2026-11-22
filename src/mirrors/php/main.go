@@ -40,7 +40,7 @@ func ImportList(db *bun.DB, topPackages []string) error {
 			defer wg.Done()
 			defer bar.Add(1)
 			// Get package
-			UpdatePackage(db, packageName)
+			_ = UpdatePackage(db, packageName) // logs its own errors
 
 			<-guard
 		}(&wg, phpPackage)
@@ -66,7 +66,7 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	var totalErrors int32
-	var totalProcessed atomic.Int32
+	var totalProcessed atomic.Int64
 
 	// Process packages in batches
 	numBatches := (len(topPackages) + batchSize - 1) / batchSize
@@ -90,11 +90,11 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 				log.Printf("⚠️  Batch %d/%d failed, falling back to individual processing: %v", batchNumber, numBatches, err)
 				// Fall back to individual processing for this batch
 				for _, pkg := range packageBatch {
-					UpdatePackage(db, pkg)
+					_ = UpdatePackage(db, pkg) // logs its own errors
 				}
 				atomic.AddInt32(&totalErrors, 1)
 			}
-			totalProcessed.Add(int32(len(packageBatch)))
+			totalProcessed.Add(int64(len(packageBatch)))
 		}(batch, batchNum)
 	}
 
@@ -153,7 +153,7 @@ func importPackageList(db *bun.DB, packages []string, wg *sync.WaitGroup, guard 
 			defer wg.Done()
 			defer bar.Add(1)
 			// Get package
-			UpdatePackage(db, packageName)
+			_ = UpdatePackage(db, packageName) // logs its own errors
 
 			<-guard
 		}(wg, phpPackage)
@@ -191,7 +191,7 @@ func Follow(db *bun.DB, db_config *bun.DB) error {
 			defer wg.Done()
 			defer bar.Add(1)
 			// Get package
-			UpdatePackage(db, packageName)
+			_ = UpdatePackage(db, packageName) // logs its own errors
 
 			<-guard
 		}(&wg, phpPackage.Name)
@@ -213,7 +213,7 @@ func UpdatePackagesBatch(db *bun.DB, packageNames []string) error {
 	err := db.NewSelect().
 		Model(&cachedPackages).
 		Column("name", "time").
-		Where("name IN (?) AND language = ?", bun.In(packageNames), "php").
+		Where("name IN (?) AND language = ?", bun.List(packageNames), "php").
 		Scan(ctx)
 	if err != nil {
 		log.Printf("Cache check query failed, downloading all: %v", err)
@@ -319,7 +319,7 @@ func UpdatePackagesBatch(db *bun.DB, packageNames []string) error {
 		err := tx.NewSelect().
 			Model(&pkgsWithIds).
 			Column("id", "name").
-			Where("name IN (?) AND language = ?", bun.In(names), "php").
+			Where("name IN (?) AND language = ?", bun.List(names), "php").
 			Scan(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to fetch package IDs: %w", err)
@@ -337,7 +337,7 @@ func UpdatePackagesBatch(db *bun.DB, packageNames []string) error {
 		if len(packageIDs) > 0 {
 			err = tx.NewSelect().
 				Model(&existingVersions).
-				Where("package_id IN (?)", bun.In(packageIDs)).
+				Where("package_id IN (?)", bun.List(packageIDs)).
 				Scan(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to batch load versions: %w", err)

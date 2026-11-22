@@ -89,22 +89,6 @@ type PackagistFunding struct {
 	Url  string `json:"url"`
 }
 
-// PackagistSearchResult represents search results from Packagist
-type PackagistSearchResult struct {
-	Results []PackagistSearchItem `json:"results"`
-	Total   int                   `json:"total"`
-	Next    string                `json:"next"`
-}
-
-type PackagistSearchItem struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Url         string `json:"url"`
-	Repository  string `json:"repository"`
-	Downloads   int    `json:"downloads"`
-	Favers      int    `json:"favers"`
-}
-
 func downloadPackagist(packageName string) (*PackagistPackage, error) {
 	return downloadPackagistWithRetry(packageName, 0)
 }
@@ -255,37 +239,4 @@ func NormalizeFunding(funding any) any {
 	default:
 		return funding
 	}
-}
-
-// searchPackagist searches for packages on Packagist.org
-func searchPackagist(query string, page int) (*PackagistSearchResult, error) {
-	// Build search URL
-	searchUrl := fmt.Sprintf("https://packagist.org/search.json?q=%s&page=%d", url.QueryEscape(query), page)
-
-	// Create HTTP request
-	req, err := http.NewRequest("GET", searchUrl, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", "CodeClarity/1.0")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("search failed: HTTP %d", resp.StatusCode)
-	}
-
-	// Parse response
-	var result PackagistSearchResult
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return nil, err
-	}
-
-	return &result, nil
 }

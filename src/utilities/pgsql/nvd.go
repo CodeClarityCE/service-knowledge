@@ -108,7 +108,7 @@ func GetNvdUUIDsByNvdIds(db *bun.DB, nvdIds []string) (map[string]uuid.UUID, err
 	err := db.NewSelect().
 		TableExpr("nvd").
 		Column("id", "nvd_id").
-		Where("nvd_id IN (?)", bun.In(nvdIds)).
+		Where("nvd_id IN (?)", bun.List(nvdIds)).
 		Scan(ctx, &results)
 
 	if err != nil {
