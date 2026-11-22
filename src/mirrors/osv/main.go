@@ -23,6 +23,7 @@ import (
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/google/uuid"
 	"github.com/schollz/progressbar/v3"
+	"github.com/sirupsen/logrus"
 	"github.com/uptrace/bun"
 )
 
@@ -82,6 +83,9 @@ var dumpBaseURL = "https://osv-vulnerabilities.storage.googleapis.com/"
 // Update updates the licenses in the OSV (Open Source Vulnerabilities) database for the specified ecosystems.
 // It retrieves the license information from the corresponding zip files for each ecosystem and updates the database accordingly.
 // The function takes a graph driver as a parameter and returns an error if any occurred during the update process.
+// httpClient bounds each download; ecosystem archives run to hundreds of MB.
+var httpClient = &http.Client{Timeout: 30 * time.Minute}
+
 func Update(db *bun.DB, db_config *bun.DB) error {
 	return sourcesync.RunCounted(db, knowledge.SourceOSV, func() (sourcesync.Result, error) {
 		return sync(db, db_config)
@@ -347,7 +351,7 @@ func removeStaleArchives() {
 // openArchive streams an ecosystem's all.zip to a temporary file and opens it from disk.
 // The returned function closes and removes the file.
 func openArchive(url string) (*zip.Reader, func(), error) {
-	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
+	resp, err := httpClient.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to download %s: %w", url, err)
 	}
@@ -364,7 +368,7 @@ func openArchive(url string) (*zip.Reader, func(), error) {
 	cleanup := func() {
 		_ = file.Close()
 		if err := os.Remove(file.Name()); err != nil {
-			log.Printf("failed to remove temporary archive %s: %v", file.Name(), err)
+			logrus.WithError(err).WithField("file", file.Name()).Warn("Failed to remove the temporary archive")
 		}
 	}
 
