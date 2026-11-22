@@ -20,7 +20,7 @@ var baseURL = "https://epss.empiricalsecurity.com/"
 
 // downloadEPSS returns every score in the file. Any defect fails the whole download.
 func downloadEPSS(url string) ([]knowledge.EPSS, error) {
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, err
 	}

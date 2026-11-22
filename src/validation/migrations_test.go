@@ -21,7 +21,7 @@ func apiMigrations(t *testing.T, dir, folder string) []string {
 	sort.Strings(files)
 	var names []string
 	for _, file := range files {
-		source, err := os.ReadFile(file)
+		source, err := os.ReadFile(file) //nolint:gosec // G304: test reads the API's migration files
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestExpectedMigrationsMatchTheAPI(t *testing.T) {
 	if dir == "" {
 		dir = filepath.Join("..", "..", "..", "..", "..", "api", "src", "migrations")
 	}
-	if _, err := os.Stat(dir); err != nil {
+	if _, err := os.Stat(dir); err != nil { //nolint:gosec // G703: test-only path override
 		t.Skipf("no API migrations at %s", dir)
 	}
 

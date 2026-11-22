@@ -347,7 +347,7 @@ func removeStaleArchives() {
 // openArchive streams an ecosystem's all.zip to a temporary file and opens it from disk.
 // The returned function closes and removes the file.
 func openArchive(url string) (*zip.Reader, func(), error) {
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to download %s: %w", url, err)
 	}
@@ -362,8 +362,10 @@ func openArchive(url string) (*zip.Reader, func(), error) {
 		return nil, nil, fmt.Errorf("failed to create temporary archive: %w", err)
 	}
 	cleanup := func() {
-		file.Close()
-		os.Remove(file.Name())
+		_ = file.Close()
+		if err := os.Remove(file.Name()); err != nil {
+			log.Printf("failed to remove temporary archive %s: %v", file.Name(), err)
+		}
 	}
 
 	size, err := io.Copy(file, resp.Body)

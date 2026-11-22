@@ -106,7 +106,7 @@ func openSchema(t *testing.T, dsn string) *bun.DB {
 
 	db := openDB(dsn, map[string]any{"search_path": schema})
 	t.Cleanup(func() {
-		db.Close()
+		_ = db.Close()
 		cleaner := openDB(dsn, nil)
 		defer cleaner.Close()
 		_, _ = cleaner.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE")

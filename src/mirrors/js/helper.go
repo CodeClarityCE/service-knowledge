@@ -56,7 +56,8 @@ func downloadWithRetry(pack string, retryCount int) (types.Npm, error) {
 	}
 	url := fmt.Sprintf("%s%s", npmURL, pack)
 
-	req, err := http.NewRequest("GET", url, nil)
+	// NPM_URL fixes the host; the package name only extends the path.
+	req, err := http.NewRequest("GET", url, nil) //nolint:gosec // G704: host comes from operator config
 	if err != nil {
 		return types.Npm{}, err
 	}
@@ -67,16 +68,17 @@ func downloadWithRetry(pack string, retryCount int) (types.Npm, error) {
 		req.Header.Set("Authorization", "Basic "+encodedAuth)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient.Do(req) //nolint:gosec // G704: host comes from operator config
 	if err != nil {
 		return types.Npm{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
+		switch resp.StatusCode {
+		case 404:
 			return types.Npm{}, fmt.Errorf("package not found: %s (%s)", pack, resp.Status)
-		} else if resp.StatusCode == 429 {
+		case 429:
 			if retryCount >= 3 {
 				return types.Npm{}, fmt.Errorf("rate limited after %d retries: %s", retryCount, pack)
 			}
@@ -84,7 +86,7 @@ func downloadWithRetry(pack string, retryCount int) (types.Npm, error) {
 			log.Printf("Rate limited for %s, retrying in %v (attempt %d/3)", pack, backoff, retryCount+1)
 			time.Sleep(backoff)
 			return downloadWithRetry(pack, retryCount+1)
-		} else {
+		default:
 			return types.Npm{}, fmt.Errorf("can't fetch package: %s (%s)", pack, resp.Status)
 		}
 	}

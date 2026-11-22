@@ -1,7 +1,6 @@
 package testhelper
 
 import (
-	"os"
 	"testing"
 
 	"github.com/CodeClarityCE/utility-boilerplates"
@@ -29,10 +28,10 @@ func SetupKnowledgeAndConfigTestDB(t *testing.T) (*bun.DB, *bun.DB, func()) {
 // setupService creates a knowledge service for testing
 func setupService(t *testing.T) (*knowledgeService, func()) {
 	// Set test database environment
-	os.Setenv("PG_DB_HOST", "127.0.0.1")
-	os.Setenv("PG_DB_PORT", "5432")
-	os.Setenv("PG_DB_USER", "postgres")
-	os.Setenv("PG_DB_PASSWORD", "!ChangeMe!")
+	t.Setenv("PG_DB_HOST", "127.0.0.1")
+	t.Setenv("PG_DB_PORT", "5432")
+	t.Setenv("PG_DB_USER", "postgres")
+	t.Setenv("PG_DB_PASSWORD", "!ChangeMe!")
 
 	// Create KnowledgeService for testing
 	service, err := createKnowledgeService()
@@ -73,6 +72,6 @@ type knowledgeService struct {
 // Close closes the ServiceBase and all database connections
 func (s *knowledgeService) Close() {
 	if s.serviceBase != nil {
-		s.serviceBase.Close()
+		_ = s.serviceBase.Close()
 	}
 }

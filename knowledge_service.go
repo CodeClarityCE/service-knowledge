@@ -32,6 +32,8 @@ func CreateKnowledgeService() (*KnowledgeService, error) {
 // Close closes the ServiceBase and all database connections
 func (s *KnowledgeService) Close() {
 	if s.serviceBase != nil {
-		s.serviceBase.Close()
+		if err := s.serviceBase.Close(); err != nil {
+			log.Printf("Failed to close the knowledge service: %v", err)
+		}
 	}
 }

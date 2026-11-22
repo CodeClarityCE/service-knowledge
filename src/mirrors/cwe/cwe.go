@@ -18,7 +18,7 @@ import (
 // Write a function that downloads an XML file from the CWE website
 func downloadFile(url string) (knowledge.CWEListImport, error) {
 	// Get the data
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		log.Println(err)
 		return knowledge.CWEListImport{}, err
