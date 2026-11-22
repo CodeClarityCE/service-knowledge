@@ -62,7 +62,7 @@ func fetchAPIMigrations(t *testing.T) string {
 	t.Helper()
 	ref := "develop"
 	for _, branch := range []string{os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")} {
-		if branch != "" && osexec.Command("git", "ls-remote", "--exit-code", "--heads", apiRepo, branch).Run() == nil {
+		if branch != "" && osexec.Command("git", "ls-remote", "--exit-code", "--heads", apiRepo, branch).Run() == nil { //nolint:gosec // G204: test-only git call on a CI branch name
 			ref = branch
 			break
 		}
@@ -72,7 +72,7 @@ func fetchAPIMigrations(t *testing.T) string {
 		{"clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse", "--branch", ref, apiRepo, checkout},
 		{"-C", checkout, "sparse-checkout", "set", "src/migrations"},
 	} {
-		cmd := osexec.Command("git", args...)
+		cmd := osexec.Command("git", args...) //nolint:gosec // G204: test-only git call with fixed arguments
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			testdeps.Unavailable(t, "the API repository at "+apiRepo, fmt.Errorf("%w: %s", err, out))
