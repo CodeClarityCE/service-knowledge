@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/CodeClarityCE/utility-boilerplates"
+	"github.com/sirupsen/logrus"
 )
 
 // KnowledgeService wraps database connections for the knowledge service
@@ -33,7 +34,7 @@ func CreateKnowledgeService() (*KnowledgeService, error) {
 func (s *KnowledgeService) Close() {
 	if s.serviceBase != nil {
 		if err := s.serviceBase.Close(); err != nil {
-			log.Printf("Failed to close the knowledge service: %v", err)
+			logrus.WithError(err).Error("Failed to close the knowledge service")
 		}
 	}
 }

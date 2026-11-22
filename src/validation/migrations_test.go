@@ -72,7 +72,7 @@ func fetchAPIMigrations(t *testing.T) string {
 		{"clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse", "--branch", ref, apiRepo, checkout},
 		{"-C", checkout, "sparse-checkout", "set", "src/migrations"},
 	} {
-		cmd := osexec.Command("git", args...) //nolint:gosec // G204: test-only git call with fixed arguments
+		cmd := osexec.Command("git", args...) //nolint:gosec // G204: test-only git call; ref is develop or a branch ls-remote just found on the API repo
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			testdeps.Unavailable(t, "the API repository at "+apiRepo, fmt.Errorf("%w: %s", err, out))

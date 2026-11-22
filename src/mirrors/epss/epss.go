@@ -19,8 +19,11 @@ import (
 var baseURL = "https://epss.empiricalsecurity.com/"
 
 // downloadEPSS returns every score in the file. Any defect fails the whole download.
+// httpClient bounds each download; the daily EPSS file is tens of MB.
+var httpClient = &http.Client{Timeout: 10 * time.Minute}
+
 func downloadEPSS(url string) ([]knowledge.EPSS, error) {
-	resp, err := http.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
+	resp, err := httpClient.Get(url) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		return nil, err
 	}
