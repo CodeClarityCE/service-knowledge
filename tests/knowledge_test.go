@@ -35,7 +35,7 @@ func TestUpdate(t *testing.T) {
 		return
 	}
 
-	t.Setenv("NPM_URL", "https://replicate.npmjs.com/")
+	t.Setenv("NPM_URL", "https://registry.npmjs.org/")
 
 	dsn := dbhelper.BuildDSN(user, password, host, port, dbhelper.Config.Database.Knowledge)
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
