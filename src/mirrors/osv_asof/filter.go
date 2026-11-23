@@ -64,7 +64,7 @@ func Filter(db *bun.DB, configDB *bun.DB, asof time.Time) error {
 			// The package_vulnerability links reference osv.id, so they go first.
 			_, err = tx.NewDelete().
 				Model((*knowledge.PackageVulnerability)(nil)).
-				Where("osv_id IN (?)", bun.In(chunk)).
+				Where("osv_id IN (?)", bun.List(chunk)).
 				Exec(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to delete package vulnerability links of filtered OSV rows: %w", err)
@@ -72,7 +72,7 @@ func Filter(db *bun.DB, configDB *bun.DB, asof time.Time) error {
 
 			_, err = tx.NewDelete().
 				Model((*knowledge.OSVItem)(nil)).
-				Where("id IN (?)", bun.In(chunk)).
+				Where("id IN (?)", bun.List(chunk)).
 				Exec(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to delete filtered OSV rows: %w", err)

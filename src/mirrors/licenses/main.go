@@ -21,6 +21,9 @@ import (
 // Update updates the licenses metadata in the provided graph.
 // It fetches the licenses from a remote source and updates them in the graph.
 // Returns an error if there is a problem when fetching or updating licenses.
+// httpClient bounds each download; the SPDX list is under 1 MB.
+var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
 func Update(db *bun.DB) error {
 	return sourcesync.RunCounted(db, knowledge.SourceLicenses, func() (sourcesync.Result, error) {
 		log.Println("Start updating Licenses metadata")
@@ -65,7 +68,7 @@ var licensesURL = "https://raw.githubusercontent.com/spdx/license-list-data/main
 // Returns the licenses and an error if there is a problem when fetching or parsing the licenses.
 func downloadLicenses() ([]knowledge.License, error) {
 	// Get licenses from remote source
-	resp, err := http.Get(licensesURL)
+	resp, err := httpClient.Get(licensesURL) //nolint:gosec // G107: fixed upstream URL; only tests swap it
 	if err != nil {
 		log.Println("No response from request")
 		return nil, err

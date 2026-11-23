@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CodeClarityCE/service-knowledge/src/sourcesync"
 	"github.com/CodeClarityCE/service-knowledge/src/testhelper"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
 	"github.com/uptrace/bun"
@@ -32,7 +31,7 @@ func fakeDumpTime(t *testing.T, dumpTime time.Time) {
 		for {
 			n, readErr := response.Body.Read(buffer)
 			if n > 0 {
-				w.Write(buffer[:n])
+				_, _ = w.Write(buffer[:n])
 			}
 			if readErr != nil {
 				break
@@ -41,13 +40,6 @@ func fakeDumpTime(t *testing.T, dumpTime time.Time) {
 	}))
 	t.Cleanup(server.Close)
 	bulkDumpURL = server.URL
-}
-
-func resetWatermark(t *testing.T, db *bun.DB) {
-	t.Helper()
-	if err := sourcesync.ResetWatermark(db, knowledge.SourceGCVE); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestFullImportCoversChangesAfterTheDumpAndRetiresAbsentRecords(t *testing.T) {

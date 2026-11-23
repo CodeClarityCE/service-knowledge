@@ -2,18 +2,11 @@ package pgsql
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
-	"net/url"
-	"os"
-	"strings"
 	"testing"
 
+	"github.com/CodeClarityCE/utility-boilerplates/testdeps"
 	knowledge "github.com/CodeClarityCE/utility-types/knowledge_db"
-	"github.com/google/uuid"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 // Same shape as the nvd table in the knowledge database.
@@ -49,23 +42,6 @@ CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, o
 CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, nvd_id) WHERE nvd_id IS NOT NULL;
 CREATE UNIQUE INDEX ON package_vulnerability (package_name, package_ecosystem, gcve_id) WHERE gcve_id IS NOT NULL;`
 
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func openTestDB(name string) *sql.DB {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		url.QueryEscape(envOr("PG_DB_USER", "postgres")),
-		url.QueryEscape(envOr("PG_DB_PASSWORD", "!ChangeMe!")),
-		envOr("PG_DB_HOST", "127.0.0.1"),
-		envOr("PG_DB_PORT", "5432"),
-		name)
-	return sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
-}
-
 // setupNvdDB creates a throwaway database holding only the nvd table and drops it after the test.
 func setupNvdDB(t *testing.T) *bun.DB {
 	t.Helper()
@@ -75,31 +51,8 @@ func setupNvdDB(t *testing.T) *bun.DB {
 // setupTestDB creates a throwaway database holding the given schema and drops it after the test.
 func setupTestDB(t *testing.T, schema string) *bun.DB {
 	t.Helper()
-	ctx := context.Background()
-
-	admin := openTestDB("postgres")
-	if err := admin.PingContext(ctx); err != nil {
-		admin.Close()
-		t.Skipf("Skipping test due to database connection error: %v", err)
-	}
-
-	name := "nvd_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		admin.Close()
-		t.Fatalf("create test database: %v", err)
-	}
-
-	sqldb := openTestDB(name)
-	db := bun.NewDB(sqldb, pgdialect.New())
-	t.Cleanup(func() {
-		db.Close()
-		if _, err := admin.ExecContext(ctx, "DROP DATABASE "+name+" WITH (FORCE)"); err != nil {
-			t.Errorf("drop test database: %v", err)
-		}
-		admin.Close()
-	})
-
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	db := testdeps.Postgres(t)
+	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		t.Fatalf("create test schema: %v", err)
 	}
 	return db
