@@ -57,16 +57,23 @@ func TestExpectedMigrationsMatchTheAPI(t *testing.T) {
 
 const apiRepo = "https://github.com/CodeClarityCE/api.git"
 
-// fetchAPIMigrations clones the API's migrations folder, from the branch named like this one if the API has it, else develop.
-func fetchAPIMigrations(t *testing.T) string {
-	t.Helper()
-	ref := "develop"
-	for _, branch := range []string{os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")} {
-		if branch != "" && osexec.Command("git", "ls-remote", "--exit-code", "--heads", apiRepo, branch).Run() == nil { //nolint:gosec // G204: test-only git call on a CI branch name
-			ref = branch
-			break
+// apiRef picks the API branch to compare with: the first CI branch the API also has, else develop.
+// main maps to develop, since the API's main is released after this service.
+func apiRef(branches []string, onAPI func(string) bool) string {
+	for _, branch := range branches {
+		if branch != "" && branch != "main" && onAPI(branch) {
+			return branch
 		}
 	}
+	return "develop"
+}
+
+// fetchAPIMigrations clones the API's migrations folder from the branch apiRef picks.
+func fetchAPIMigrations(t *testing.T) string {
+	t.Helper()
+	ref := apiRef([]string{os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")}, func(branch string) bool {
+		return osexec.Command("git", "ls-remote", "--exit-code", "--heads", apiRepo, branch).Run() == nil //nolint:gosec // G204: test-only git call on a CI branch name
+	})
 	checkout := t.TempDir()
 	for _, args := range [][]string{
 		{"clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse", "--branch", ref, apiRepo, checkout},
