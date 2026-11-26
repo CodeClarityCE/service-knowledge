@@ -3,11 +3,11 @@ module github.com/CodeClarityCE/service-knowledge
 go 1.27.4
 
 require (
-	github.com/CodeClarityCE/utility-amqp-helper v0.0.23-alpha
-	github.com/CodeClarityCE/utility-boilerplates v0.0.19-alpha
-	github.com/CodeClarityCE/utility-dbhelper v0.0.26-alpha
-	github.com/CodeClarityCE/utility-node-semver v0.0.15-alpha
-	github.com/CodeClarityCE/utility-types v0.0.30-alpha
+	github.com/CodeClarityCE/utility-amqp-helper v0.0.24-alpha
+	github.com/CodeClarityCE/utility-boilerplates v0.0.20-alpha
+	github.com/CodeClarityCE/utility-dbhelper v0.0.27-alpha
+	github.com/CodeClarityCE/utility-node-semver v0.0.16-alpha
+	github.com/CodeClarityCE/utility-types v0.0.31-alpha
 	github.com/google/uuid v1.6.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.19.1
@@ -30,7 +30,7 @@ require (
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/rabbitmq/amqp091-go v1.16.0 // indirect
+	github.com/rabbitmq/amqp091-go v1.17.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
