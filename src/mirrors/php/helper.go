@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Shared HTTP client with connection pooling and timeout
@@ -134,26 +137,42 @@ func downloadPackagistWithRetry(packageName string, retryCount int) (*PackagistP
 		return nil, err
 	}
 
-	// Parse JSON response
+	return parsePackagist(packageName, body)
+}
+
+// parsePackagist reads a Packagist v2 metadata response for one package.
+func parsePackagist(packageName string, body []byte) (*PackagistPackage, error) {
 	// Packagist v2 API returns packages in a wrapper object
 	var wrapper struct {
-		Packages map[string][]PackagistVersionInfo `json:"packages"`
+		Minified string                  `json:"minified"`
+		Packages map[string][]rawVersion `json:"packages"`
 	}
 
-	err = json.Unmarshal(body, &wrapper)
+	err := json.Unmarshal(body, &wrapper)
 	if err != nil {
 		log.Printf("Error unmarshaling response for package %s: %v", packageName, err)
 		return nil, err
 	}
 
 	// Extract package versions
-	versions, ok := wrapper.Packages[packageName]
+	rawVersions, ok := wrapper.Packages[packageName]
 	if !ok {
 		return nil, fmt.Errorf("package %s not found in response", packageName)
 	}
 
-	if len(versions) == 0 {
+	if len(rawVersions) == 0 {
 		return nil, fmt.Errorf("no versions found for package %s", packageName)
+	}
+
+	if wrapper.Minified == minifiedFormat {
+		rawVersions = expandMinified(rawVersions)
+	}
+	versions := make([]PackagistVersionInfo, len(rawVersions))
+	for i, raw := range rawVersions {
+		if versions[i], err = decodeVersion(raw); err != nil {
+			logrus.WithField("package", packageName).WithError(err).Error("Could not read a Packagist version")
+			return nil, err
+		}
 	}
 
 	// Convert to our internal format
@@ -191,6 +210,45 @@ func downloadPackagistWithRetry(packageName string, retryCount int) (*PackagistP
 	}
 
 	return result, nil
+}
+
+// minifiedFormat marks a response whose versions list only what changed from the version before.
+const minifiedFormat = "composer/2.0"
+
+// unsetJSON is the encoded value that removes an inherited field in a minified response.
+const unsetJSON = `"__unset"`
+
+// rawVersion is one version entry of a Packagist response, field by field as encoded.
+type rawVersion map[string]json.RawMessage
+
+// expandMinified gives each version the fields it inherits, as Composer's MetadataMinifier::expand does.
+func expandMinified(versions []rawVersion) []rawVersion {
+	expanded := make([]rawVersion, len(versions))
+	current := rawVersion{}
+	for i, version := range versions {
+		next := maps.Clone(current)
+		for key, value := range version {
+			if string(value) == unsetJSON {
+				delete(next, key)
+				continue
+			}
+			next[key] = value
+		}
+		expanded[i] = next
+		current = next
+	}
+	return expanded
+}
+
+// decodeVersion reads one version's fields into a PackagistVersionInfo.
+func decodeVersion(raw rawVersion) (PackagistVersionInfo, error) {
+	var version PackagistVersionInfo
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return version, err
+	}
+	err = json.Unmarshal(data, &version)
+	return version, err
 }
 
 // NormalizeDependencies converts various dependency formats to a consistent map[string]string
