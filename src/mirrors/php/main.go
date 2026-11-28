@@ -67,6 +67,9 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 	var wg sync.WaitGroup
 	var totalErrors int32
 	var totalProcessed atomic.Int64
+	// Packages the one-at-a-time fallback could not store either.
+	var failedMu sync.Mutex
+	var failed []error
 
 	// Process packages in batches
 	numBatches := (len(topPackages) + batchSize - 1) / batchSize
@@ -90,7 +93,11 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 				log.Printf("⚠️  Batch %d/%d failed, falling back to individual processing: %v", batchNumber, numBatches, err)
 				// Fall back to individual processing for this batch
 				for _, pkg := range packageBatch {
-					_ = UpdatePackage(db, pkg) // logs its own errors
+					if err := UpdatePackage(db, pkg); err != nil {
+						failedMu.Lock()
+						failed = append(failed, fmt.Errorf("%s: %w", pkg, err))
+						failedMu.Unlock()
+					}
 				}
 				atomic.AddInt32(&totalErrors, 1)
 			}
@@ -110,6 +117,9 @@ func ImportListWithBatching(db *bun.DB, topPackages []string) error {
 			duration, packagesPerSec)
 	}
 
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d PHP packages were not imported, the first: %w", len(failed), len(topPackages), failed[0])
+	}
 	return nil
 }
 
